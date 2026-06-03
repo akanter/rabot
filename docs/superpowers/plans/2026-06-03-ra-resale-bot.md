@@ -42,8 +42,9 @@ rabot/
 ```
 
 **Types defined once, used everywhere (keep names exact):**
-- `TicketTier(title: str, available: bool, price: str | None)`
-- `FetchResult(ok: bool, tiers: list[TicketTier], error: str | None)` with `.any_available` property
+- `FetchResult(ok: bool, available: bool, event_title: str | None, error: str | None)`
+  — RA exposes only a single anonymous availability boolean
+  (`event.ticketing.isAnyTicketTierAvailable`); see `docs/ra-api-notes.md`. No per-tier type.
 - `State(last_available: bool, last_alert_ts: float | None, consecutive_failures: int, blind_alerted: bool)`
 - `Action` enum: `NONE`, `ALERT_AVAILABLE`, `ALERT_BLIND`
 - `Decision(action: Action, message: str | None)`
@@ -122,44 +123,22 @@ git commit -m "chore: project scaffold with green test harness"
 
 ---
 
-## Task 2: Discovery spike — capture RA ticket query + fixtures
+## Task 2: Discovery spike — COMPLETE
 
-This is a **manual reverse-engineering task**. No code logic is guessed; you capture the real request/response and record findings. Everything downstream is TDD'd against these fixtures.
+**Done during planning** by direct `POST https://ra.co/graphql` probing (introspection is
+enabled, so no browser was needed). Findings are recorded in `docs/ra-api-notes.md` and
+real fixtures are captured. Summary for downstream tasks:
 
-**Files:**
-- Create: `docs/ra-api-notes.md`, `tests/fixtures/tickets_available.json`, `tests/fixtures/tickets_soldout.json`
+- Endpoint `https://ra.co/graphql`, anonymous, headers `Content-Type: application/json` +
+  browser `User-Agent` + `Referer: https://ra.co/events`. No Cloudflare block.
+- **Per-tier data is NOT anonymously available.** The only public availability signal is the
+  boolean `data.event.ticketing.isAnyTicketTierAvailable`.
+- Query:
+  `query GetEventTicketing($id: ID!){ event(id:$id){ id title ticketing{ isAnyTicketTierAvailable ticketStatus } } }`
+- Fixtures committed: `tests/fixtures/tickets_available.json` (true),
+  `tests/fixtures/tickets_soldout.json` (false).
 
-- [ ] **Step 1: Capture the live ticket request**
-
-In a desktop browser, open an RA event page that is **currently on sale / has tickets** (e.g. any `https://ra.co/events/<id>`). Open DevTools → Network → filter `graphql`. Reload. Find the POST to `https://ra.co/graphql` whose response contains ticket/price data. Copy as:
-- the request payload (`operationName`, `variables`, full `query` string)
-- the full JSON response
-
-- [ ] **Step 2: Save the available fixture**
-
-Save the response JSON verbatim to `tests/fixtures/tickets_available.json`.
-
-- [ ] **Step 3: Capture and save a sold-out fixture**
-
-Repeat Step 1 on a **sold-out** event and save its response to `tests/fixtures/tickets_soldout.json`.
-
-- [ ] **Step 4: Diff the two fixtures to find the availability signal**
-
-Compare the per-ticket objects in both fixtures. Identify:
-- the JSON path to the ticket list (expected: `data.event.tickets`, confirm)
-- the field name(s) for ticket title and price (expected: `title`, `priceRetail`, confirm)
-- the field(s) that differ between available and sold-out (the availability discriminator)
-
-- [ ] **Step 5: Record findings**
-
-Write `docs/ra-api-notes.md` with: endpoint, required headers (`Referer`, `User-Agent`, `Content-Type: application/json`), the exact `operationName` + `query` string, the `variables` shape (event id goes where), the response path to tickets, and the exact availability discriminator field + values. This file is the source of truth for Task 5.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add docs/ra-api-notes.md tests/fixtures
-git commit -m "spike: capture RA ticket GraphQL query and available/sold-out fixtures"
-```
+No action needed for this task; proceed to Task 5 using the query and fixtures above.
 
 ---
 
@@ -373,7 +352,9 @@ git commit -m "feat: atomic JSON state store"
 
 ## Task 5: RA client (parse + fetch)
 
-Uses the fixtures and findings from Task 2. **Before writing code, open `docs/ra-api-notes.md` and adjust the three marked constants/branches in `ra_client.py` to match what you captured.**
+Uses the real fixtures and the confirmed query from Task 2 / `docs/ra-api-notes.md`. The
+availability signal is the single boolean `data.event.ticketing.isAnyTicketTierAvailable`
+(per-tier data is not anonymously available). Do **not** reintroduce a tier list.
 
 **Files:**
 - Create: `src/rabot/ra_client.py`, `tests/test_ra_client.py`
@@ -386,10 +367,9 @@ import json
 from pathlib import Path
 
 import httpx
-import pytest
 
 from rabot.config import Config
-from rabot.ra_client import TicketTier, FetchResult, parse_tickets, fetch
+from rabot.ra_client import FetchResult, parse_availability, parse_title, fetch
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -398,52 +378,82 @@ def _load(name):
     return json.loads((FIXTURES / name).read_text())
 
 
-def test_parse_available_has_a_buyable_tier():
-    tiers = parse_tickets(_load("tickets_available.json"))
-    assert tiers, "expected at least one tier"
-    assert any(t.available for t in tiers)
-    assert all(isinstance(t, TicketTier) for t in tiers)
+def _cfg():
+    return Config(event_url="https://ra.co/events/1234567", signal_sender="+1",
+                  signal_recipient="+2", state_path="/tmp/s.json")
 
 
-def test_parse_soldout_has_no_buyable_tier():
-    tiers = parse_tickets(_load("tickets_soldout.json"))
-    assert not any(t.available for t in tiers)
+def test_parse_available_fixture_is_available():
+    assert parse_availability(_load("tickets_available.json")) is True
 
 
-def test_fetchresult_any_available():
-    assert FetchResult(True, [TicketTier("GA", True, "10")], None).any_available
-    assert not FetchResult(True, [TicketTier("GA", False, "10")], None).any_available
+def test_parse_soldout_fixture_is_not_available():
+    assert parse_availability(_load("tickets_soldout.json")) is False
 
 
-def test_fetch_ok_with_mock_transport():
+def test_parse_title():
+    assert parse_title(_load("tickets_available.json")) == "Waterworks Extended 2026"
+
+
+def test_fetch_ok_available():
     payload = _load("tickets_available.json")
     transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload))
-    cfg = Config(event_url="https://ra.co/events/1234567", signal_sender="+1",
-                 signal_recipient="+2", state_path="/tmp/s.json")
     with httpx.Client(transport=transport) as client:
-        result = fetch(cfg, client=client)
-    assert result.ok and result.any_available and result.error is None
+        result = fetch(_cfg(), client=client)
+    assert result.ok is True
+    assert result.available is True
+    assert result.event_title == "Waterworks Extended 2026"
+    assert result.error is None
+
+
+def test_fetch_ok_soldout():
+    payload = _load("tickets_soldout.json")
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload))
+    with httpx.Client(transport=transport) as client:
+        result = fetch(_cfg(), client=client)
+    assert result.ok is True and result.available is False
+
+
+def test_fetch_sends_expected_graphql_body():
+    seen = {}
+
+    def handler(req):
+        seen["json"] = json.loads(req.content)
+        seen["headers"] = req.headers
+        return httpx.Response(200, json=_load("tickets_available.json"))
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetch(_cfg(), client=client)
+    assert seen["json"]["variables"] == {"id": "1234567"}
+    assert "isAnyTicketTierAvailable" in seen["json"]["query"]
+    assert seen["headers"]["referer"] == "https://ra.co/events"
 
 
 def test_fetch_http_error_returns_not_ok():
     transport = httpx.MockTransport(lambda req: httpx.Response(503, text="nope"))
-    cfg = Config(event_url="https://ra.co/events/1234567", signal_sender="+1",
-                 signal_recipient="+2", state_path="/tmp/s.json")
     with httpx.Client(transport=transport) as client:
-        result = fetch(cfg, client=client)
+        result = fetch(_cfg(), client=client)
     assert result.ok is False
-    assert result.tiers == []
+    assert result.available is False
     assert result.error and "503" in result.error
+
+
+def test_fetch_graphql_errors_returns_not_ok():
+    body = {"errors": [{"message": "unauthorized"}], "data": None}
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=body))
+    with httpx.Client(transport=transport) as client:
+        result = fetch(_cfg(), client=client)
+    assert result.ok is False and result.available is False
+    assert result.error and "unauthorized" in result.error
 
 
 def test_fetch_network_error_returns_not_ok():
     def boom(req):
         raise httpx.ConnectError("down", request=req)
     transport = httpx.MockTransport(boom)
-    cfg = Config(event_url="https://ra.co/events/1234567", signal_sender="+1",
-                 signal_recipient="+2", state_path="/tmp/s.json")
     with httpx.Client(transport=transport) as client:
-        result = fetch(cfg, client=client)
+        result = fetch(_cfg(), client=client)
     assert result.ok is False and result.error
 ```
 
@@ -452,39 +462,17 @@ def test_fetch_network_error_returns_not_ok():
 Run: `pytest tests/test_ra_client.py -q`
 Expected: FAIL (`ModuleNotFoundError: rabot.ra_client`).
 
-- [ ] **Step 3: Implement `ra_client.py`** (adjust the 3 marked spots to match Task 2 findings)
+- [ ] **Step 3: Implement `ra_client.py`**
 
 ```python
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
 import httpx
 
-# --- Adjust these THREE things to match docs/ra-api-notes.md (Task 2) ---
-# (1) The exact query string captured from the network tab:
-GET_EVENT_TICKETS_QUERY = """query GET_EVENT_TICKETS($id: ID!) {
-  event(id: $id) {
-    id
-    tickets {
-      id
-      title
-      priceRetail
-      onSaleFrom
-      isAddOn
-      validType
-    }
-  }
-}"""
-
-
-def _tickets_path(payload: dict) -> list[dict]:
-    # (2) Path to the ticket list in the response:
-    return ((payload.get("data") or {}).get("event") or {}).get("tickets") or []
-
-
-def _is_available(ticket: dict) -> bool:
-    # (3) Availability discriminator found by diffing the two fixtures.
-    #     Replace this with the real signal. Example placeholder logic:
-    return bool(ticket.get("onSaleFrom")) and not ticket.get("isSoldOut", False)
-# -----------------------------------------------------------------------
+GET_EVENT_TICKETING_QUERY = (
+    "query GetEventTicketing($id: ID!) { "
+    "event(id: $id) { id title ticketing { isAnyTicketTierAvailable ticketStatus } } }"
+)
 
 _HEADERS = {
     "Content-Type": "application/json",
@@ -494,39 +482,31 @@ _HEADERS = {
 
 
 @dataclass
-class TicketTier:
-    title: str
-    available: bool
-    price: str | None = None
-
-
-@dataclass
 class FetchResult:
     ok: bool
-    tiers: list[TicketTier] = field(default_factory=list)
+    available: bool = False
+    event_title: str | None = None
     error: str | None = None
 
-    @property
-    def any_available(self) -> bool:
-        return any(t.available for t in self.tiers)
+
+def _event(payload: dict) -> dict:
+    return (payload.get("data") or {}).get("event") or {}
 
 
-def parse_tickets(payload: dict) -> list[TicketTier]:
-    return [
-        TicketTier(
-            title=t.get("title", "Ticket"),
-            available=_is_available(t),
-            price=t.get("priceRetail"),
-        )
-        for t in _tickets_path(payload)
-    ]
+def parse_availability(payload: dict) -> bool:
+    ticketing = _event(payload).get("ticketing") or {}
+    return bool(ticketing.get("isAnyTicketTierAvailable"))
+
+
+def parse_title(payload: dict) -> str | None:
+    return _event(payload).get("title")
 
 
 def fetch(config, client: httpx.Client | None = None) -> FetchResult:
     body = {
-        "operationName": "GET_EVENT_TICKETS",
+        "operationName": "GetEventTicketing",
         "variables": {"id": config.event_id},
-        "query": GET_EVENT_TICKETS_QUERY,
+        "query": GET_EVENT_TICKETING_QUERY,
     }
     owns_client = client is None
     client = client or httpx.Client(timeout=15.0)
@@ -534,7 +514,11 @@ def fetch(config, client: httpx.Client | None = None) -> FetchResult:
         resp = client.post(config.graphql_endpoint, json=body, headers=_HEADERS)
         if resp.status_code != 200:
             return FetchResult(ok=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
-        return FetchResult(ok=True, tiers=parse_tickets(resp.json()))
+        payload = resp.json()
+        if payload.get("errors"):
+            return FetchResult(ok=False, error=f"graphql errors: {payload['errors']}")
+        return FetchResult(ok=True, available=parse_availability(payload),
+                           event_title=parse_title(payload))
     except httpx.HTTPError as exc:
         return FetchResult(ok=False, error=f"request failed: {exc}")
     except (ValueError, KeyError) as exc:
@@ -547,13 +531,13 @@ def fetch(config, client: httpx.Client | None = None) -> FetchResult:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `pytest tests/test_ra_client.py -q`
-Expected: all passed. If `test_parse_available_has_a_buyable_tier` or the sold-out test fails, your `_is_available` does not yet match reality — fix it against the fixtures (this is the intended TDD loop for the spike data).
+Expected: 8 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/rabot/ra_client.py tests/test_ra_client.py
-git commit -m "feat: RA GraphQL client with fixture-driven ticket parsing"
+git commit -m "feat: RA GraphQL client returning availability boolean"
 ```
 
 ---
@@ -568,7 +552,7 @@ git commit -m "feat: RA GraphQL client with fixture-driven ticket parsing"
 `tests/test_evaluator.py`:
 ```python
 from rabot.evaluator import evaluate, Action
-from rabot.ra_client import FetchResult, TicketTier
+from rabot.ra_client import FetchResult
 from rabot.state import State
 
 URL = "https://ra.co/events/1234567"
@@ -576,11 +560,11 @@ KW = dict(cooldown_seconds=900, failure_threshold=3, event_url=URL)
 
 
 def ok(available):
-    return FetchResult(True, [TicketTier("GA", available, "10")], None)
+    return FetchResult(ok=True, available=available, event_title="Test Event")
 
 
 def fail():
-    return FetchResult(False, [], "boom")
+    return FetchResult(ok=False, error="boom")
 
 
 def test_transition_unavailable_to_available_alerts():
@@ -686,15 +670,15 @@ def evaluate(result: FetchResult, state: State, *, now: float,
         return Decision(Action.NONE), new
 
     new = replace(state, consecutive_failures=0, blind_alerted=False)
-    available = result.any_available
+    available = result.available
 
     if available and not state.last_available:
         within_cooldown = (state.last_alert_ts is not None
                            and (now - state.last_alert_ts) < cooldown_seconds)
         if within_cooldown:
             return Decision(Action.NONE), replace(new, last_available=True)
-        tiers = ", ".join(t.title for t in result.tiers if t.available)
-        msg = f"\U0001f3ab Tickets available for {event_url}: {tiers}"
+        label = result.event_title or event_url
+        msg = f"\U0001f3ab Tickets available for {label}: {event_url}"
         return Decision(Action.ALERT_AVAILABLE, msg), replace(
             new, last_available=True, last_alert_ts=now)
 
@@ -811,7 +795,7 @@ Add to `tests/test_cli.py` (create):
 import time
 
 import rabot.cli as cli
-from rabot.ra_client import FetchResult, TicketTier
+from rabot.ra_client import FetchResult
 from rabot.config import Config
 from rabot.state import State, load_state
 
@@ -830,7 +814,7 @@ def test_run_check_alerts_and_persists(tmp_path, monkeypatch):
                  signal_recipient="+2", state_path=state_path)
     monkeypatch.setattr(cli, "load_config", lambda: cfg)
     monkeypatch.setattr(cli, "fetch",
-                        lambda c, client=None: FetchResult(True, [TicketTier("GA", True, "10")], None))
+                        lambda c, client=None: FetchResult(ok=True, available=True, event_title="Test Event"))
     notifier = FakeNotifier()
     monkeypatch.setattr(cli, "build_notifier", lambda c: notifier)
 
@@ -846,7 +830,7 @@ def test_run_check_no_alert_when_unavailable(tmp_path, monkeypatch):
                  signal_recipient="+2", state_path=state_path)
     monkeypatch.setattr(cli, "load_config", lambda: cfg)
     monkeypatch.setattr(cli, "fetch",
-                        lambda c, client=None: FetchResult(True, [TicketTier("GA", False, "10")], None))
+                        lambda c, client=None: FetchResult(ok=True, available=False, event_title="Test Event"))
     notifier = FakeNotifier()
     monkeypatch.setattr(cli, "build_notifier", lambda c: notifier)
 
@@ -1157,6 +1141,6 @@ git commit -m "docs: README and macOS launchd example"
 
 **Spec coverage:** channel=Signal (Tasks 7, 11) ✓; one event (config event_id) ✓; resale unavailable→available trigger (Task 6) ✓; configurable cadence (NixOS `interval` / launchd `StartInterval`) ✓; once-per-transition + cooldown + re-arm (Task 6 tests) ✓; Python one-shot CLI (Task 8) ✓; Nix flake + NixOS module (Task 10) ✓; macOS launchd (Task 11) ✓; silent-failure handling / "couldn't check" ≠ "unavailable" + blind alert (Tasks 5, 6) ✓; testing strategy — evaluator units, ra_client fixtures, notifier fake, e2e smoke (Tasks 5,6,7,9) ✓.
 
-**Known dependency:** Tasks 5, 9 depend on the Task 2 spike fixtures. The three marked spots in `ra_client.py` (query string, ticket path, availability discriminator) are filled from `docs/ra-api-notes.md`. This is the one place a human/agent must inspect live RA output rather than copy code — by design, since RA's ticket schema is not publicly documented.
+**Known dependency:** Tasks 5, 9 use the Task 2 fixtures (`tests/fixtures/tickets_available.json`, `tickets_soldout.json`), already captured and committed. Task 2 is complete; the confirmed query and the single-boolean availability signal (`event.ticketing.isAnyTicketTierAvailable`) are documented in `docs/ra-api-notes.md`.
 
-**Type consistency:** `FetchResult`, `TicketTier`, `State`, `Action`, `Decision`, `Config` signatures are identical across Tasks 3–9. `build_notifier`/`fetch`/`load_config` are the three seams monkeypatched in CLI tests and they match `cli.py`.
+**Type consistency:** `FetchResult(ok, available, event_title, error)`, `State`, `Action`, `Decision`, `Config` signatures are identical across Tasks 3–9. The evaluator and CLI use `result.available`/`result.event_title` (no tier list). `build_notifier`/`fetch`/`load_config` are the three seams monkeypatched in CLI tests and they match `cli.py`.

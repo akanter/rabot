@@ -1,0 +1,12 @@
+{
+  "data": {
+    "event": {
+      "id": "2345415",
+      "title": "Waterworks Extended 2026",
+      "ticketing": {
+        "isAnyTicketTierAvailable": true,
+        "ticketStatus": "approved"
+      }
+    }
+  }
+}

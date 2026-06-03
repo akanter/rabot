@@ -61,17 +61,18 @@ Each component has one purpose, a well-defined interface, and is independently
 testable.
 
 ### `ra_client`
-Given the event URL / ID, returns structured availability: a list of tiers, each
-`{title, price, available: bool}`. Encapsulates **all** RA-specific detail
-(GraphQL endpoint, query, response parsing) so no other component touches HTTP
-or parsing.
+Given the event URL / ID, returns a `FetchResult` carrying `{ok, available,
+event_title, error}`. Encapsulates **all** RA-specific detail (GraphQL endpoint,
+query, response parsing) so no other component touches HTTP or parsing.
 
-> **Discovery spike required.** RA's site (ra.co) is a React app that pulls event
-> data from a GraphQL endpoint. Confirming the exact query and fields is the one
-> genuine unknown in this project and must be spiked early. Risk: if RA blocks
-> unauthenticated GraphQL, we may need a session cookie or, as a last resort, a
-> headless-browser fallback. The `ra_client` interface isolates this risk from
-> the rest of the system.
+> **Discovery spike — DONE (see `docs/ra-api-notes.md`).** Confirmed: `POST
+> https://ra.co/graphql` works anonymously with a `User-Agent` + `Referer` header;
+> no Cloudflare block. Per-tier data is **not** anonymously available (`event.tickets`
+> is empty, `ticketTiersV2` is 401). The single public availability signal is the
+> boolean `event.ticketing.isAnyTicketTierAvailable`, which flips `false → true` when
+> a sold-out event gains resale/returns — exactly our trigger. The client therefore
+> returns one boolean, not a tier list. Query:
+> `query GetEventTicketing($id: ID!){ event(id:$id){ id title ticketing{ isAnyTicketTierAvailable ticketStatus } } }`.
 
 ### `evaluator`
 Pure logic, no I/O. Takes current availability + persisted last-known state and
