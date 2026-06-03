@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.rabot.check</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/TO/rabot</string>
+    <string>check</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RABOT_EVENT_URL</key><string>https://ra.co/events/REPLACE_ID</string>
+    <key>RABOT_SIGNAL_SENDER</key><string>+10000000000</string>
+    <key>RABOT_SIGNAL_RECIPIENT</key><string>+10000000001</string>
+    <key>RABOT_STATE_PATH</key><string>/Users/YOU/Library/Application Support/rabot/state.json</string>
+    <key>PATH</key><string>/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/rabot.err.log</string>
+  <key>StandardOutPath</key><string>/tmp/rabot.out.log</string>
+</dict>
+</plist>
