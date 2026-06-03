@@ -59,6 +59,7 @@
                   "RABOT_STATE_PATH=/var/lib/rabot/state.json"
                   "RABOT_COOLDOWN_SECONDS=${toString cfg.cooldownSeconds}"
                   "RABOT_FAILURE_THRESHOLD=${toString cfg.failureThreshold}"
+                  "HOME=/var/lib/rabot"
                 ];
               };
             };

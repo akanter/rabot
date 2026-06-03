@@ -54,7 +54,7 @@ def fetch(config, client: httpx.Client | None = None) -> FetchResult:
                            event_title=parse_title(payload))
     except httpx.HTTPError as exc:
         return FetchResult(ok=False, error=f"request failed: {exc}")
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError) as exc:  # JSONDecodeError <: ValueError → covers 200-with-non-JSON body
         return FetchResult(ok=False, error=f"parse failed: {exc}")
     finally:
         if owns_client:

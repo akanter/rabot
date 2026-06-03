@@ -44,3 +44,31 @@ def test_run_check_no_alert_when_unavailable(tmp_path, monkeypatch):
 
     assert notifier.messages == []
     assert load_state(state_path).last_available is False
+
+
+def test_send_failure_persists_failure_counter_and_retries(tmp_path, monkeypatch):
+    import rabot.cli as cli
+    from rabot.ra_client import FetchResult
+    from rabot.config import Config
+    from rabot.state import State, save_state, load_state
+
+    state_path = str(tmp_path / "state.json")
+    # Start already at threshold-1 so this failed fetch should trigger a blind alert
+    save_state(state_path, State(consecutive_failures=4))
+    cfg = Config(event_url="https://ra.co/events/1234567", signal_sender="+1",
+                 signal_recipient="+2", state_path=state_path, failure_threshold=5)
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    monkeypatch.setattr(cli, "fetch",
+                        lambda c, client=None: FetchResult(ok=False, error="boom"))
+
+    class FailingNotifier:
+        def send(self, message):
+            raise RuntimeError("signal-cli down")
+
+    monkeypatch.setattr(cli, "build_notifier", lambda c: FailingNotifier())
+
+    cli.run_check()  # must NOT raise
+
+    persisted = load_state(state_path)
+    assert persisted.consecutive_failures == 5      # counter progressed despite send failure
+    assert persisted.blind_alerted is False          # alert not recorded as delivered -> retries

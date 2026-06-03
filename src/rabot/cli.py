@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+from dataclasses import replace
 
 from rabot.config import load_config
 from rabot.state import load_state, save_state
@@ -25,7 +26,14 @@ def run_check() -> None:
         event_url=config.event_url,
     )
     if decision.action is not Action.NONE:
-        build_notifier(config).send(decision.message)
+        try:
+            build_notifier(config).send(decision.message)
+        except Exception as exc:  # signal-cli failed; don't record the alert as delivered
+            print(f"rabot: Signal send failed, will retry next cycle: {exc}", file=sys.stderr)
+            # Keep the prior alert-tracking state (so the alert re-fires next cycle),
+            # but absorb the freshly-observed fetch-failure counter so blind-detection
+            # still progresses across cycles.
+            new_state = replace(state, consecutive_failures=new_state.consecutive_failures)
     save_state(config.state_path, new_state)
 
 

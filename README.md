@@ -82,7 +82,15 @@ journalctl -u rabot
 
 The module wires a systemd oneshot service and a timer. `signal-cli` is placed on the service's `PATH` automatically.
 
-**Important caveat:** the module uses `DynamicUser = true`, which means systemd allocates an ephemeral user at runtime. signal-cli stores linked-account data in a user-specific directory. You must ensure that signal-cli's linked data is accessible to the dynamic service user (e.g. by pre-linking under the same state directory or adjusting `StateDirectory` ownership). Verify signal-cli can send a test message as the service user before relying on the bot.
+**signal-cli linking for the NixOS service:** the module sets `DynamicUser = true` and `HOME=/var/lib/rabot`, so signal-cli reads and writes its linked-account data under `/var/lib/rabot/.local/share/signal-cli`. The `StateDirectory = "rabot"` directive ensures `/var/lib/rabot` is created and persisted across runs. You must perform the one-time link so the data ends up there — for example:
+
+```bash
+sudo HOME=/var/lib/rabot signal-cli link -n "rabot"
+# then chown the result to the service's state directory if needed:
+sudo chown -R root:root /var/lib/rabot   # DynamicUser owns it at runtime; root is fine for storage
+```
+
+Alternatively, link elsewhere and copy the resulting `~/.local/share/signal-cli` directory into `/var/lib/rabot/.local/share/signal-cli`. Verify signal-cli can send a test message before relying on the bot.
 
 ## macOS deploy
 
