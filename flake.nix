@@ -113,28 +113,37 @@
           };
         };
 
-      # nix-darwin module: a per-user LaunchAgent (runs as the logged-in user, so
-      # $HOME is set and signal-cli's linked data under ~/.local/share is found).
-      # rabot's state file defaults to ~/.local/state/rabot/state.json.
+      # nix-darwin module: a LaunchDaemon that runs as `user` (UserName). A daemon
+      # (not an agent) is the right model for `sudo darwin-rebuild`: root manages
+      # it, no GUI-login/bootstrap dance, and it runs 24/7 regardless of login.
+      # HOME is set explicitly so signal-cli finds its linked data under
+      # ~/.local/share and rabot writes state under ~/.local/state.
       darwinModules.default = { config, lib, pkgs, ... }:
         let cfg = config.services.rabot;
         in {
           options.services.rabot = rabotOptions lib {
             intervalSeconds = lib.mkOption { type = lib.types.int; default = 60; };
+            user = lib.mkOption {
+              type = lib.types.str;
+              default = config.system.primaryUser;
+              description = "User to run the daemon as (must have signal-cli linked).";
+            };
           };
           config = lib.mkIf cfg.enable {
             assertions = [{
               assertion = cfg.signalRecipient != null || cfg.signalGroupId != null;
               message = "services.rabot: set signalRecipient or signalGroupId (or both).";
             }];
-            launchd.agents.rabot = {
+            launchd.daemons.rabot = {
               serviceConfig = {
                 ProgramArguments = [ "${self.packages.${pkgs.system}.default}/bin/rabot" "check" ];
+                UserName = cfg.user;
                 StartInterval = cfg.intervalSeconds;
                 RunAtLoad = true;
                 StandardErrorPath = "/tmp/rabot.err.log";
                 StandardOutPath = "/tmp/rabot.out.log";
                 EnvironmentVariables = {
+                  HOME = "/Users/${cfg.user}";
                   RABOT_EVENT_URL = cfg.eventUrl;
                   RABOT_SIGNAL_SENDER = cfg.signalSender;
                   RABOT_COOLDOWN_SECONDS = toString cfg.cooldownSeconds;
