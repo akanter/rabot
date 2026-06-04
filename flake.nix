@@ -101,6 +101,12 @@
             }];
             environment.systemPackages =
               lib.optionals cfg.withCliTools [ pkgs.signal-cli pkgs.qrencode ];
+            # After a rebuild, nudge the operator if signal-cli isn't linked yet.
+            system.activationScripts.rabot-link-hint.text = ''
+              if [ ! -d "${config.users.users.${cfg.user}.home}/.local/share/signal-cli" ]; then
+                echo "⚠ rabot: Signal not linked yet — run 'rabot link' as ${cfg.user} to enable alerts." >&2
+              fi
+            '';
             systemd.services.rabot = {
               description = "rabot RA resale check";
               path = [ pkgs.signal-cli ];
@@ -153,6 +159,12 @@
             }];
             environment.systemPackages =
               lib.optionals cfg.withCliTools [ pkgs.signal-cli pkgs.qrencode ];
+            # After a rebuild, nudge the operator if signal-cli isn't linked yet.
+            system.activationScripts.postActivation.text = lib.mkAfter ''
+              if [ ! -d "/Users/${cfg.user}/.local/share/signal-cli" ]; then
+                echo "⚠ rabot: Signal not linked yet — run 'rabot link' as ${cfg.user} to enable alerts." >&2
+              fi
+            '';
             launchd.daemons.rabot = {
               serviceConfig = {
                 ProgramArguments = [ "${self.packages.${pkgs.system}.default}/bin/rabot" "check" ];

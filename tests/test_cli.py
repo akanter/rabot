@@ -14,6 +14,27 @@ class FakeNotifier:
         self.messages.append(message)
 
 
+def test_link_command_invokes_linker(monkeypatch):
+    calls = {}
+    monkeypatch.setenv("RABOT_SIGNAL_CLI", "/store/signal-cli")
+    monkeypatch.setattr(
+        cli, "signal_link",
+        lambda cli_path, device: calls.update(cli=cli_path, device=device) or 0)
+
+    rc = cli.main(["link", "rabot-cage"])
+
+    assert rc == 0
+    assert calls == {"cli": "/store/signal-cli", "device": "rabot-cage"}
+
+
+def test_link_command_defaults_device_to_hostname(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(cli, "signal_link",
+                        lambda cli_path, device: calls.update(device=device) or 0)
+    cli.main(["link"])
+    assert calls["device"].startswith("rabot-")
+
+
 def test_run_check_alerts_and_persists(tmp_path, monkeypatch):
     state_path = str(tmp_path / "state.json")
     cfg = Config(event_url="https://ra.co/events/1234567", signal_sender="+1",

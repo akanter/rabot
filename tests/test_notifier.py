@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from rabot.notifier import SignalNotifier
+from rabot.notifier import SignalNotifier, link
 
 
 def _capture(monkeypatch):
@@ -47,3 +47,40 @@ def test_send_raises_on_failure(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(subprocess.CalledProcessError):
         SignalNotifier("signal-cli", "+1", "+2").send("hi")
+
+
+class _FakeProc:
+    def __init__(self, lines, rc=0):
+        self.stdout = iter(lines)
+        self._rc = rc
+
+    def wait(self):
+        return self._rc
+
+
+def test_link_runs_signal_cli_and_renders_qr_from_uri():
+    seen = {}
+
+    def fake_popen(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return _FakeProc([
+            "Some signal-cli preamble\n",
+            "sgnl://linkdevice?uuid=abc%3D%3D&pub_key=xyz\n",
+            "Associated with: +15550000001\n",
+        ])
+
+    rendered = []
+    rc = link("signal-cli", "rabot-host",
+              popen=fake_popen, render_qr=rendered.append)
+
+    assert rc == 0
+    assert seen["cmd"] == ["signal-cli", "link", "-n", "rabot-host"]
+    assert rendered == ["sgnl://linkdevice?uuid=abc%3D%3D&pub_key=xyz"]
+
+
+def test_link_returns_nonzero_exit_when_signal_cli_fails():
+    def fake_popen(cmd, **kwargs):
+        return _FakeProc(["Link request error: Connection closed!\n"], rc=3)
+
+    rc = link("signal-cli", "rabot-host", popen=fake_popen, render_qr=lambda u: None)
+    assert rc == 3
