@@ -11,11 +11,22 @@ from rabot.notifier import SignalNotifier
 
 
 def build_notifier(config):
-    return SignalNotifier(config.signal_cli_path, config.signal_sender, config.signal_recipient)
+    return SignalNotifier(
+        config.signal_cli_path,
+        config.signal_sender,
+        recipient=config.signal_recipient,
+        group_id=config.signal_group_id,
+    )
 
 
-def run_check() -> None:
+def run_check(event_url: str | None = None) -> None:
     config = load_config()
+    if event_url:  # CLI argument overrides RABOT_EVENT_URL
+        config = replace(config, event_url=event_url)
+    if not config.event_url:
+        raise SystemExit(
+            "No event URL: pass it as `rabot check <url>` or set RABOT_EVENT_URL"
+        )
     state = load_state(config.state_path)
     result = fetch(config)
     decision, new_state = evaluate(
@@ -40,10 +51,12 @@ def run_check() -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="rabot")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("check", help="Run one availability check cycle")
+    check = sub.add_parser("check", help="Run one availability check cycle")
+    check.add_argument("event_url", nargs="?", default=None,
+                       help="RA event URL to check (overrides RABOT_EVENT_URL)")
     args = parser.parse_args(argv)
     if args.command == "check":
-        run_check()
+        run_check(event_url=args.event_url)
         return 0
     return 1
 

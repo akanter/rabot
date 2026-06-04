@@ -46,6 +46,34 @@ def test_run_check_no_alert_when_unavailable(tmp_path, monkeypatch):
     assert load_state(state_path).last_available is False
 
 
+def test_event_url_cli_arg_overrides_config(tmp_path, monkeypatch):
+    state_path = str(tmp_path / "state.json")
+    cfg = Config(event_url="", signal_sender="+1", signal_recipient="+2",
+                 state_path=state_path)  # no event in config
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    seen = {}
+
+    def fake_fetch(c, client=None):
+        seen["event_url"] = c.event_url
+        return FetchResult(ok=True, available=False, event_title=None)
+
+    monkeypatch.setattr(cli, "fetch", fake_fetch)
+    monkeypatch.setattr(cli, "build_notifier", lambda c: FakeNotifier())
+
+    cli.run_check(event_url="https://ra.co/events/9999999")
+
+    assert seen["event_url"] == "https://ra.co/events/9999999"
+
+
+def test_no_event_url_anywhere_exits(tmp_path, monkeypatch):
+    import pytest
+    cfg = Config(event_url="", signal_sender="+1", signal_recipient="+2",
+                 state_path=str(tmp_path / "s.json"))
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    with pytest.raises(SystemExit):
+        cli.run_check()
+
+
 def test_send_failure_persists_failure_counter_and_retries(tmp_path, monkeypatch):
     import rabot.cli as cli
     from rabot.ra_client import FetchResult
