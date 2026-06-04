@@ -1,149 +1,123 @@
 # rabot
 
-rabot watches a single [Resident Advisor](https://ra.co) event and sends you a [Signal](https://signal.org) message the moment tickets become available. It is built for catching resales and returns on a sold-out event.
+rabot watches a single [Resident Advisor](https://ra.co) event and sends a [Signal](https://signal.org) message the moment tickets become available. It is built for catching resales and returns on a sold-out event.
 
 ## What it does
 
-rabot is a one-shot CLI: run `rabot check` on an interval and it will query RA's public GraphQL API (`event.ticketing.isAnyTicketTierAvailable`) to determine whether any ticket tier is currently on sale. When availability flips from unavailable to available, it fires a Signal message to your phone.
+rabot is a one-shot CLI: `rabot check` queries RA's public GraphQL API (`event.ticketing.isAnyTicketTierAvailable`) to see whether any ticket tier is currently buyable. When availability flips from unavailable to available, it sends a Signal message — to a phone number, a group, or both.
 
-Alerts fire once per transition, then go quiet. If the event sells out again and tickets reappear later, the bot re-arms and alerts again. A configurable cooldown prevents repeat messages during a single availability window.
+- Alerts fire **once per transition**, then go quiet. If the event sells out and tickets reappear, the bot **re-arms** and alerts again. A cooldown prevents repeat messages within one availability window.
+- State (last availability, cooldown timestamp, failure count) is persisted to a JSON file, so it survives restarts.
+- After `RABOT_FAILURE_THRESHOLD` consecutive fetch failures it sends a "can't check" heads-up, so silence is never ambiguous.
 
-State (last seen availability, cooldown timestamp, consecutive failure count) is persisted in a local JSON file, so the bot survives restarts without losing context. After `RABOT_FAILURE_THRESHOLD` consecutive fetch failures it sends a "can't check" heads-up so silence is never ambiguous — you always know whether the bot is working.
+rabot keeps no process running between checks. A scheduler (systemd timer on NixOS, a launchd job on macOS) runs `rabot check` on an interval. The Nix flake provides modules that wire all of this up for you.
 
-rabot does not keep a process running between checks. Schedule it with systemd (NixOS) or launchd (macOS) at whatever interval you want.
+## CLI
 
-## One-time signal-cli linking
-
-rabot delegates all Signal sending to [signal-cli](https://github.com/AsamK/signal-cli). You need to link signal-cli to your Signal account once before anything works.
-
-**Install signal-cli:**
-
-```bash
-# Nix / NixOS
-nix profile install nixpkgs#signal-cli
-
-# macOS (Homebrew)
-brew install signal-cli
+```
+rabot check [EVENT_URL]   # one check cycle; EVENT_URL overrides RABOT_EVENT_URL
+rabot link [NAME]         # one-time: link this device to your Signal account
 ```
 
-**Link to your phone:**
+`rabot link` runs signal-cli's device linking, renders the QR right in your terminal (via `qrencode`), and waits — scan it with **Signal → Settings → Linked Devices → +**. `NAME` defaults to `rabot-<hostname>`.
 
-```bash
-signal-cli link -n "rabot"
-```
+## Deploy with the Nix flake (recommended)
 
-This prints a `tsdevice:/...` URI. Paste it into any QR code generator (e.g. a browser-based one), then in the Signal app on your phone go to **Settings → Linked devices** and scan the code.
-
-After linking:
-
-- `RABOT_SIGNAL_SENDER` is the phone number of the Signal account you linked (the number on the phone you scanned from).
-- `RABOT_SIGNAL_RECIPIENT` is the destination for alerts. Setting it to the same number as the sender delivers alerts to your own "Note to Self" conversation, which works well.
-
-## NixOS deploy
-
-The flake ships a NixOS module. Add rabot to your system flake inputs:
+The flake provides `nixosModules.default` (systemd) and `darwinModules.default` (launchd), plus the `rabot` package. Add it to your system flake inputs:
 
 ```nix
-# flake.nix (your system flake)
-inputs.rabot.url = "github:YOU/rabot";  # local repo for now — adjust when published
+inputs.rabot.url = "github:akanter/rabot";
+inputs.rabot.inputs.nixpkgs.follows = "nixpkgs";
 ```
 
-Import the module in your NixOS configuration:
+Both modules run as a real **`user`** (not a throwaway DynamicUser) so signal-cli's linked-account data lives in that user's home and persists. With `withCliTools` (default on), the module also puts `rabot`, `signal-cli`, and `qrencode` on `PATH`, and after a rebuild it prints a reminder if the account isn't linked yet.
+
+### NixOS
 
 ```nix
-imports = [ inputs.rabot.nixosModules.default ];
+{
+  imports = [ inputs.rabot.nixosModules.default ];
+
+  services.rabot = {
+    enable = true;
+    user = "ak";                                   # runs as this user; link signal-cli in their home
+    eventUrl = "https://ra.co/events/2287366";
+    signalSender = "+10000000000";                 # your linked Signal number
+    signalGroupId = "BASE64GROUPID=";              # alert a group …
+    # signalRecipient = "+10000000001";            # … and/or a phone number (set at least one)
+    # interval = "60s";          # check cadence (default 60s)
+    # receiveInterval = "6h";    # signal-cli receive housekeeping (default 6h; null to disable)
+    # cooldownSeconds = 900;
+    # failureThreshold = 5;
+  };
+}
 ```
-
-Configure and enable the service:
-
-```nix
-services.rabot = {
-  enable = true;
-  eventUrl = "https://ra.co/events/2345415";
-  signalSender = "+10000000000";
-  signalRecipient = "+10000000001";
-  interval = "60s";        # systemd timer interval; jittered by RandomizedDelaySec
-  # cooldownSeconds = 900; # optional, default 900
-  # failureThreshold = 5;  # optional, default 5
-};
-```
-
-Then rebuild:
 
 ```bash
 sudo nixos-rebuild switch
+# if it says rabot isn't linked yet:
+sudo -u ak rabot link
+# logs:
+journalctl -u rabot.service        # the checks
+systemctl list-timers rabot.timer  # cadence
 ```
 
-**Logs:**
+### macOS (nix-darwin)
+
+```nix
+{
+  imports = [ inputs.rabot.darwinModules.default ];
+
+  services.rabot = {
+    enable = true;
+    user = "you";                                  # LaunchDaemon runs as this user
+    eventUrl = "https://ra.co/events/2287366";
+    signalSender = "+10000000000";
+    signalGroupId = "BASE64GROUPID=";
+    # intervalSeconds = 60;            # check cadence (default 60)
+    # receiveIntervalSeconds = 21600;  # receive housekeeping (default 6h; null to disable)
+  };
+}
+```
 
 ```bash
-journalctl -u rabot
+sudo darwin-rebuild switch
+rabot link               # if prompted that it isn't linked
+# logs: /tmp/rabot.out.log, /tmp/rabot.err.log
 ```
 
-The module wires a systemd oneshot service and a timer. `signal-cli` is placed on the service's `PATH` automatically.
+A LaunchDaemon with `UserName` (not a LaunchAgent) is used deliberately: it suits `sudo darwin-rebuild`, needs no GUI-login bootstrap, and runs 24/7.
 
-**signal-cli linking for the NixOS service:** the module sets `DynamicUser = true` and `HOME=/var/lib/rabot`, so signal-cli reads and writes its linked-account data under `/var/lib/rabot/.local/share/signal-cli`. The `StateDirectory = "rabot"` directive ensures `/var/lib/rabot` is created and persisted across runs. You must perform the one-time link so the data ends up there — for example:
+> Finding a group ID: `signal-cli -u <sender> listGroups` prints each group's base64 `Id:`. To alert a group, signal-cli must have **received** the group at least once (the receive timer handles this).
 
-```bash
-sudo HOME=/var/lib/rabot signal-cli link -n "rabot"
-# then chown the result to the service's state directory if needed:
-sudo chown -R root:root /var/lib/rabot   # DynamicUser owns it at runtime; root is fine for storage
-```
+## Manual / non-Nix run
 
-Alternatively, link elsewhere and copy the resulting `~/.local/share/signal-cli` directory into `/var/lib/rabot/.local/share/signal-cli`. Verify signal-cli can send a test message before relying on the bot.
+`rabot` only needs `signal-cli` on `PATH` (or `RABOT_SIGNAL_CLI` pointed at it). Set the env vars and run `rabot check` from cron, a systemd timer, or the example `examples/com.rabot.check.plist` launchd job.
 
-## macOS deploy
+## Account housekeeping (`signal-cli receive`)
 
-Build the binary:
-
-```bash
-nix build
-# result/bin/rabot is the built binary
-
-# or run directly without installing:
-nix run .# -- check
-```
-
-Edit the example plist:
-
-```bash
-cp examples/com.rabot.check.plist ~/Library/LaunchAgents/com.rabot.check.plist
-```
-
-Open it and replace the placeholders:
-
-- `/ABSOLUTE/PATH/TO/rabot` — paste the absolute path to `result/bin/rabot`
-- `RABOT_EVENT_URL` — the RA event URL
-- `RABOT_SIGNAL_SENDER` / `RABOT_SIGNAL_RECIPIENT` — your phone numbers
-- `RABOT_STATE_PATH` — a writable path, e.g. `/Users/you/Library/Application Support/rabot/state.json` (create the directory first)
-
-Load the agent:
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.rabot.check.plist
-```
-
-**Logs:** `/tmp/rabot.out.log` and `/tmp/rabot.err.log`
-
-`StartInterval` in the plist (seconds) controls the poll cadence.
+A linked device must `receive` periodically to refresh prekeys, rotate keys, and pick up group/session state — otherwise a later send (to a group especially) can fail. Because rabot sends rarely, the modules run `signal-cli receive` on a timer (`receiveInterval` / `receiveIntervalSeconds`, default 6h) to keep the device healthy. Set it to `null` to disable.
 
 ## Configuration reference
 
-All configuration is via environment variables.
+The CLI reads environment variables; the modules set them for you from the options above.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `RABOT_EVENT_URL` | yes | — | RA event URL, e.g. `https://ra.co/events/2345415` |
+| `RABOT_EVENT_URL` | yes¹ | — | RA event URL, e.g. `https://ra.co/events/2287366` |
 | `RABOT_SIGNAL_SENDER` | yes | — | Phone number of the linked signal-cli account |
-| `RABOT_SIGNAL_RECIPIENT` | yes | — | Destination phone number for alerts |
-| `RABOT_STATE_PATH` | no | `/var/lib/rabot/state.json` | Path to the JSON state file |
-| `RABOT_COOLDOWN_SECONDS` | no | `900` | Minimum seconds between repeat alerts within one availability window |
-| `RABOT_FAILURE_THRESHOLD` | no | `5` | Consecutive fetch failures before a "blind" alert is sent |
+| `RABOT_SIGNAL_RECIPIENT` | yes² | — | Destination phone number for alerts |
+| `RABOT_SIGNAL_GROUP_ID` | yes² | — | Destination Signal group (base64 id) for alerts |
+| `RABOT_STATE_PATH` | no | `$XDG_STATE_HOME/rabot/state.json` (else `~/.local/state/…`) | JSON state file |
+| `RABOT_COOLDOWN_SECONDS` | no | `900` | Min seconds between repeat alerts in one window |
+| `RABOT_FAILURE_THRESHOLD` | no | `5` | Consecutive fetch failures before a "blind" alert |
 | `RABOT_GRAPHQL_ENDPOINT` | no | `https://ra.co/graphql` | RA GraphQL endpoint |
-| `RABOT_SIGNAL_CLI` | no | `signal-cli` | Path to the signal-cli binary |
+| `RABOT_SIGNAL_CLI` | no | `signal-cli` | Path to the signal-cli binary (the Nix package bakes in a working one) |
+
+¹ Optional if you pass the URL as `rabot check <url>`. ² Set **at least one** of `RABOT_SIGNAL_RECIPIENT` / `RABOT_SIGNAL_GROUP_ID`.
 
 ## Tuning
 
-The default poll interval is 60 seconds. Lower values increase responsiveness but may trigger rate-limiting from RA — if you see sustained fetch failures, back off. After `RABOT_FAILURE_THRESHOLD` consecutive failures the bot will Signal you that it has gone blind, so you will not be left wondering if it is still working.
+The default poll interval is 60s. Lower is more responsive but risks RA rate-limiting; after `RABOT_FAILURE_THRESHOLD` consecutive failures the bot Signals you that it has gone blind, so you are never left guessing.
 
-See [`docs/ra-api-notes.md`](docs/ra-api-notes.md) for details on how ticket availability is detected via the RA GraphQL API.
+See [`docs/ra-api-notes.md`](docs/ra-api-notes.md) for how availability is detected via the RA GraphQL API.

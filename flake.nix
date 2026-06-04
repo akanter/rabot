@@ -89,6 +89,14 @@
         in {
           options.services.rabot = rabotOptions lib {
             interval = lib.mkOption { type = lib.types.str; default = "60s"; };
+            receiveInterval = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = "6h";
+              description = ''
+                How often to run `signal-cli receive` (systemd time span) to keep the
+                linked device healthy (prekeys, group state). null disables it.
+              '';
+            };
             user = lib.mkOption {
               type = lib.types.str;
               description = "User to run the service as (must have signal-cli linked in their home).";
@@ -134,6 +142,29 @@
                 RandomizedDelaySec = "15s";
               };
             };
+            # Periodic `signal-cli receive` keeps the linked device healthy
+            # (refreshes prekeys, group/session state). rabot itself never receives.
+            systemd.services.rabot-receive = lib.mkIf (cfg.receiveInterval != null) {
+              description = "rabot signal-cli receive (account housekeeping)";
+              serviceConfig = {
+                Type = "oneshot";
+                User = cfg.user;
+                Environment = [ "HOME=${config.users.users.${cfg.user}.home}" ];
+                ExecStart =
+                  "${pkgs.signal-cli}/bin/signal-cli -u ${cfg.signalSender} receive --timeout 10";
+                # Discard received-message output (housekeeping only; also avoids
+                # logging message contents). Errors still go to the journal.
+                StandardOutput = "null";
+              };
+            };
+            systemd.timers.rabot-receive = lib.mkIf (cfg.receiveInterval != null) {
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnBootSec = "5min";
+                OnUnitActiveSec = cfg.receiveInterval;
+                RandomizedDelaySec = "5min";
+              };
+            };
           };
         };
 
@@ -147,6 +178,14 @@
         in {
           options.services.rabot = rabotOptions lib {
             intervalSeconds = lib.mkOption { type = lib.types.int; default = 60; };
+            receiveIntervalSeconds = lib.mkOption {
+              type = lib.types.nullOr lib.types.int;
+              default = 21600;  # 6h
+              description = ''
+                How often (seconds) to run `signal-cli receive` to keep the linked
+                device healthy (prekeys, group state). null disables it.
+              '';
+            };
             user = lib.mkOption {
               type = lib.types.str;
               default = config.system.primaryUser;
@@ -186,6 +225,23 @@
                 } // lib.optionalAttrs (cfg.signalGroupId != null) {
                   RABOT_SIGNAL_GROUP_ID = cfg.signalGroupId;
                 };
+              };
+            };
+            # Periodic `signal-cli receive` keeps the linked device healthy
+            # (refreshes prekeys, group/session state). rabot itself never receives.
+            launchd.daemons.rabot-receive = lib.mkIf (cfg.receiveIntervalSeconds != null) {
+              serviceConfig = {
+                ProgramArguments = [
+                  "${pkgs.signal-cli}/bin/signal-cli" "-u" cfg.signalSender "receive" "--timeout" "10"
+                ];
+                UserName = cfg.user;
+                StartInterval = cfg.receiveIntervalSeconds;
+                RunAtLoad = true;
+                # Discard received-message output (housekeeping only; also avoids
+                # logging message contents). Keep stderr for genuine errors.
+                StandardOutPath = "/dev/null";
+                StandardErrorPath = "/tmp/rabot-receive.err.log";
+                EnvironmentVariables = { HOME = "/Users/${cfg.user}"; };
               };
             };
           };
