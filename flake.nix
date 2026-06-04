@@ -19,6 +19,20 @@
           propagatedBuildInputs = [ pkgs.python312Packages.httpx ];
           nativeCheckInputs = [ pkgs.python312Packages.pytest pkgs.python312Packages.pytestCheckHook ];
           pythonImportsCheck = [ "rabot" ];
+          # Bundle the JVM signal-cli from nixpkgs and make it the default the CLI
+          # shells out to. This avoids Homebrew's GraalVM native-image build, which
+          # has a reflection bug (IdentityKeyDeserializer) that breaks sends.
+          # An explicit RABOT_SIGNAL_CLI in the environment still overrides this.
+          makeWrapperArgs = [
+            "--set-default" "RABOT_SIGNAL_CLI" "${pkgs.signal-cli}/bin/signal-cli"
+          ];
+        };
+      });
+
+      apps = forAll (pkgs: {
+        default = {
+          type = "app";
+          program = "${self.packages.${pkgs.system}.default}/bin/rabot";
         };
       });
 
