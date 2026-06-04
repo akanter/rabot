@@ -32,6 +32,15 @@
         };
         cooldownSeconds = lib.mkOption { type = lib.types.int; default = 900; };
         failureThreshold = lib.mkOption { type = lib.types.int; default = 5; };
+        withCliTools = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Install signal-cli and qrencode into system packages, so the one-time
+            `signal-cli link` (and rendering its QR) works without `nix run`. The
+            signal-cli here matches the one the service uses.
+          '';
+        };
       } // extra;
     in
     {
@@ -71,32 +80,40 @@
         };
       });
 
+      # NixOS module: a systemd oneshot + timer, run as a real `user` (NOT
+      # DynamicUser) so signal-cli's linked data persists in that user's home and
+      # can be linked once interactively. HOME is taken from the user's account so
+      # signal-cli (~/.local/share) and rabot state (~/.local/state) resolve there.
       nixosModules.default = { config, lib, pkgs, ... }:
         let cfg = config.services.rabot;
         in {
           options.services.rabot = rabotOptions lib {
             interval = lib.mkOption { type = lib.types.str; default = "60s"; };
+            user = lib.mkOption {
+              type = lib.types.str;
+              description = "User to run the service as (must have signal-cli linked in their home).";
+            };
           };
           config = lib.mkIf cfg.enable {
             assertions = [{
               assertion = cfg.signalRecipient != null || cfg.signalGroupId != null;
               message = "services.rabot: set signalRecipient or signalGroupId (or both).";
             }];
+            environment.systemPackages =
+              lib.optionals cfg.withCliTools [ pkgs.signal-cli pkgs.qrencode ];
             systemd.services.rabot = {
               description = "rabot RA resale check";
               path = [ pkgs.signal-cli ];
               serviceConfig = {
                 Type = "oneshot";
-                DynamicUser = true;
-                StateDirectory = "rabot";
+                User = cfg.user;
                 ExecStart = "${self.packages.${pkgs.system}.default}/bin/rabot check";
                 Environment = [
                   "RABOT_EVENT_URL=${cfg.eventUrl}"
                   "RABOT_SIGNAL_SENDER=${cfg.signalSender}"
-                  "RABOT_STATE_PATH=/var/lib/rabot/state.json"
                   "RABOT_COOLDOWN_SECONDS=${toString cfg.cooldownSeconds}"
                   "RABOT_FAILURE_THRESHOLD=${toString cfg.failureThreshold}"
-                  "HOME=/var/lib/rabot"
+                  "HOME=${config.users.users.${cfg.user}.home}"
                 ]
                 ++ lib.optional (cfg.signalRecipient != null) "RABOT_SIGNAL_RECIPIENT=${cfg.signalRecipient}"
                 ++ lib.optional (cfg.signalGroupId != null) "RABOT_SIGNAL_GROUP_ID=${cfg.signalGroupId}";
@@ -134,6 +151,8 @@
               assertion = cfg.signalRecipient != null || cfg.signalGroupId != null;
               message = "services.rabot: set signalRecipient or signalGroupId (or both).";
             }];
+            environment.systemPackages =
+              lib.optionals cfg.withCliTools [ pkgs.signal-cli pkgs.qrencode ];
             launchd.daemons.rabot = {
               serviceConfig = {
                 ProgramArguments = [ "${self.packages.${pkgs.system}.default}/bin/rabot" "check" ];
