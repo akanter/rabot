@@ -7,8 +7,9 @@ NOW_ISO = "2026-06-08T00:00:00+00:00"
 KW = dict(now_iso=NOW_ISO, cooldown_seconds=900, failure_threshold=3, event_url=URL)
 
 
-def ok(available):
-    return FetchResult(ok=True, available=available, event_title="Test Event", status_code=200)
+def ok(available, tiers=()):
+    return FetchResult(ok=True, available=available, event_title="Test Event",
+                       available_tiers=tiers, status_code=200)
 
 
 def fail(status=None):
@@ -20,6 +21,13 @@ def test_transition_unavailable_to_available_alerts():
     assert decision.action is Action.ALERT_AVAILABLE
     assert "ra.co/events/1234567" in decision.message
     assert new.last_available is True and new.last_alert_ts == 1000.0
+
+
+def test_alert_message_names_available_tiers():
+    decision, _ = evaluate(ok(True, tiers=("Tier 1", "Tier 2")),
+                           EventState(last_available=False), now=1000.0, **KW)
+    assert decision.action is Action.ALERT_AVAILABLE
+    assert "(Tier 1, Tier 2)" in decision.message
 
 
 def test_stays_quiet_while_available():

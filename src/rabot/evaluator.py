@@ -49,7 +49,8 @@ def evaluate(result: FetchResult, state: EventState, *, now: float, now_iso: str
         if within_cooldown:
             return Decision(Action.NONE), replace(new, last_available=True)
         label = result.event_title or event_url
-        msg = f"\U0001f3ab Tickets available for {label}: {event_url}"
+        tiers = f" ({', '.join(result.available_tiers)})" if result.available_tiers else ""
+        msg = f"\U0001f3ab Tickets available for {label}{tiers}: {event_url}"
         return Decision(Action.ALERT_AVAILABLE, msg), replace(
             new, last_available=True, last_alert_ts=now)
 

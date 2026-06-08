@@ -2,16 +2,19 @@ from dataclasses import dataclass
 import json
 import os
 import re
+import tomllib
 
 
 def default_state_path() -> str:
-    """Portable per-user state path (honors XDG_STATE_HOME, else ~/.local/state).
-
-    Works on both Linux and macOS without hardcoding a user. The NixOS module
-    overrides this with /var/lib/rabot via RABOT_STATE_PATH.
-    """
+    """Portable per-user state path (honors XDG_STATE_HOME, else ~/.local/state)."""
     base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
     return os.path.join(base, "rabot", "state.json")
+
+
+def default_config_path() -> str:
+    """Default config file location (honors XDG_CONFIG_HOME, else ~/.config)."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "rabot", "config.toml")
 
 
 @dataclass(frozen=True)
@@ -33,7 +36,7 @@ class EventWatch:
 class Config:
     events: tuple[EventWatch, ...]
     signal_sender: str
-    # Defaults used when building a watch from a bare CLI url / RABOT_EVENT_URL.
+    # Defaults used when building a watch from a bare CLI url.
     default_recipient: str | None = None
     default_group_id: str | None = None
     state_path: str = ""
@@ -43,7 +46,6 @@ class Config:
     signal_cli_path: str = "signal-cli"
 
     def watch_for_url(self, url: str) -> EventWatch:
-        """Build a watch for an ad-hoc URL using the global default target."""
         return _make_watch(url, self.default_recipient, self.default_group_id)
 
 
@@ -51,51 +53,96 @@ def _make_watch(url: str, recipient: str | None, group_id: str | None) -> EventW
     if not recipient and not group_id:
         raise ValueError(
             f"event {url!r} has no target: set a recipient/group on it, "
-            "or a global RABOT_SIGNAL_RECIPIENT / RABOT_SIGNAL_GROUP_ID"
+            "or a default recipient/group"
         )
     return EventWatch(url=url, recipient=recipient, group_id=group_id)
 
 
 def load_config(env=None) -> Config:
+    """Load config from a TOML file if present, else from environment variables.
+
+    A config file is used when RABOT_CONFIG points at one, or (for a real run,
+    i.e. env is None) when ~/.config/rabot/config.toml exists. Otherwise the
+    RABOT_* environment variables are read.
+    """
+    use_default_path = env is None
     env = os.environ if env is None else env
 
-    def required(key: str) -> str:
-        value = env.get(key)
-        if not value:
-            raise ValueError(f"Missing required env var {key}")
-        return value
+    cfg_path = env.get("RABOT_CONFIG")
+    if cfg_path:
+        if not os.path.exists(cfg_path):
+            raise ValueError(f"RABOT_CONFIG file not found: {cfg_path}")
+    elif use_default_path:
+        dp = default_config_path()
+        cfg_path = dp if os.path.exists(dp) else None
 
+    if cfg_path:
+        return _from_toml(cfg_path, env)
+    return _from_env(env)
+
+
+def _signal_cli(env) -> str:
+    # The Nix wrapper sets RABOT_SIGNAL_CLI to the bundled signal-cli; honor it
+    # even in TOML mode unless the file overrides it.
+    return env.get("RABOT_SIGNAL_CLI", "signal-cli")
+
+
+def _from_toml(path: str, env) -> Config:
+    with open(path, "rb") as handle:
+        data = tomllib.load(handle)
+    sender = data.get("signal_sender")
+    if not sender:
+        raise ValueError(f"config {path}: signal_sender is required")
+    default_recipient = data.get("signal_recipient")
+    default_group_id = data.get("signal_group_id")
+    events = tuple(
+        _make_watch(e["url"], e.get("recipient") or default_recipient,
+                    e.get("group") or default_group_id)
+        for e in data.get("events", [])
+    )
+    return Config(
+        events=events,
+        signal_sender=sender,
+        default_recipient=default_recipient,
+        default_group_id=default_group_id,
+        state_path=data.get("state_path") or default_state_path(),
+        cooldown_seconds=int(data.get("cooldown_seconds", 900)),
+        failure_threshold=int(data.get("failure_threshold", 5)),
+        graphql_endpoint=data.get("graphql_endpoint", "https://ra.co/graphql"),
+        signal_cli_path=data.get("signal_cli") or _signal_cli(env),
+    )
+
+
+def _from_env(env) -> Config:
+    sender = env.get("RABOT_SIGNAL_SENDER")
+    if not sender:
+        raise ValueError("Missing required env var RABOT_SIGNAL_SENDER")
     default_recipient = env.get("RABOT_SIGNAL_RECIPIENT") or None
     default_group_id = env.get("RABOT_SIGNAL_GROUP_ID") or None
 
-    # Events come from RABOT_EVENTS (JSON list) or a single RABOT_EVENT_URL.
-    # Each event may carry its own recipient/group; otherwise it falls back to
-    # the global default. An empty set is allowed here — the CLI may supply a URL.
-    raw = env.get("RABOT_EVENTS")
-    if raw:
+    # RABOT_EVENTS is a plain whitespace/comma-separated URL list (all on the
+    # default target) or a JSON list of {url, recipient?, group?} for overrides.
+    raw = (env.get("RABOT_EVENTS") or "").strip()
+    if raw.startswith("["):
         entries = json.loads(raw)
-    elif env.get("RABOT_EVENT_URL"):
-        entries = [{"url": env["RABOT_EVENT_URL"]}]
+    elif raw:
+        entries = [{"url": u} for u in raw.replace(",", " ").split()]
     else:
         entries = []
 
     events = tuple(
-        _make_watch(
-            e["url"],
-            e.get("recipient") or default_recipient,
-            e.get("group") or default_group_id,
-        )
+        _make_watch(e["url"], e.get("recipient") or default_recipient,
+                    e.get("group") or default_group_id)
         for e in entries
     )
-
     return Config(
         events=events,
-        signal_sender=required("RABOT_SIGNAL_SENDER"),
+        signal_sender=sender,
         default_recipient=default_recipient,
         default_group_id=default_group_id,
         state_path=env.get("RABOT_STATE_PATH") or default_state_path(),
         cooldown_seconds=int(env.get("RABOT_COOLDOWN_SECONDS", "900")),
         failure_threshold=int(env.get("RABOT_FAILURE_THRESHOLD", "5")),
         graphql_endpoint=env.get("RABOT_GRAPHQL_ENDPOINT", "https://ra.co/graphql"),
-        signal_cli_path=env.get("RABOT_SIGNAL_CLI", "signal-cli"),
+        signal_cli_path=_signal_cli(env),
     )

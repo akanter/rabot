@@ -18,43 +18,58 @@ Anonymous requests **cannot** read per-tier ticket data:
 - `Ticketing_ticketTiersV2` returns `401 UNAUTHENTICATED`.
 - `event.ticketing.ticketListingItems` returns `[]` anonymously.
 
-The **one** anonymously-readable availability signal is a single boolean:
+### CRITICAL: two ticketing systems, two signals
 
-```
-event(id: $id) { ticketing { isAnyTicketTierAvailable } }
-```
+RA events use one of two ticketing systems (`event.ticketingSystem`), and the
+availability signal differs. **Reading only one is wrong** — it was the original
+bug (rabot polled only `isAnyTicketTierAvailable` and was blind to LEGACY events
+like Houghton, which is the actual target).
 
-`isAnyTicketTierAvailable` is `true` when any tier is buyable, `false` otherwise
-(sold out, not yet on sale, or externally ticketed). For a sold-out event gaining
-resale/returns, this flips `false → true` — exactly the bot's trigger.
+- **LEGACY events** (`ticketingSystem: "LEGACY"`): availability is per-tier in
+  the **legacy `tickets` list**, each `Ticket` having a `validType`
+  (`VALID` = buyable, `SOLDOUT`, `NOTYETONSALE`, …). For these, the V2
+  `isAnyTicketTierAvailable` is **structurally `false`** (the V2 object is empty),
+  so it must NOT be relied on. The website itself renders LEGACY availability from
+  this tier list ("the ticket tier will be lit up"). The legacy `tickets` field
+  **is readable anonymously** when queried with `queryType: AVAILABLE`.
+- **ENTIRE / V2 events** (`ticketingSystem: "ENTIRE"`, e.g. Waterworks 2345415):
+  `ticketing.isAnyTicketTierAvailable` is the signal; the legacy `tickets` list is
+  empty.
 
-Verified across 133 events: exactly the on-sale ones report `true`
-(e.g. event 2345415 "Waterworks Extended 2026" → `true`; sold-out event 2384759 → `false`).
+**Add-ons must be excluded.** Parking/vehicle/locker passes are separate tiers
+with `isAddOn: true` and are often always `VALID` even on a sold-out event
+(Houghton has 3 such VALID add-ons while all 6 festival tiers are `SOLDOUT`).
+`tickets(queryType: AVAILABLE, ticketTierType: TICKETS)` excludes add-ons; we also
+guard on `isAddOn` in code.
+
+**rabot's availability rule:** available =
+`ticketing.isAnyTicketTierAvailable` **OR** any non-add-on tier with
+`validType == "VALID"`.
 
 ## The query the bot uses
 
 ```graphql
-query GetEventTicketing($id: ID!) {
+query GetEventAvailability($id: ID!) {
   event(id: $id) {
     id
     title
-    ticketing {
-      isAnyTicketTierAvailable
-      ticketStatus
-    }
+    ticketingSystem
+    ticketing { isAnyTicketTierAvailable }
+    tickets(queryType: AVAILABLE, ticketTierType: TICKETS) { title validType isAddOn }
   }
 }
 ```
 
 - `variables`: `{"id": "<numeric event id>"}` (the id from `https://ra.co/events/<id>`).
-- Response path to the signal: `data.event.ticketing.isAnyTicketTierAvailable` (boolean).
-- `data.event.title` gives a human label for the notification.
-- `ticketStatus` (enum: `approved` / `pending` / `stopped` / `cancelled` / `deleted`)
-  is captured for context/logging; `approved` is the normal selling state.
+- Available tier titles (legacy) feed the alert message, e.g. "… (Tier 1)".
+- Verified live: Houghton 2287366 (LEGACY, 6 festival tiers SOLDOUT + 3 VALID
+  add-ons) → `available = false` (add-ons correctly ignored); Waterworks 2345415
+  (ENTIRE) → `available = true` via `isAnyTicketTierAvailable`.
 
 ## Design implication
 
-`ra_client.fetch()` returns a single availability boolean, not a list of tiers.
+`ra_client.fetch()` returns an availability boolean plus the names of any buyable
+(non-add-on) tiers.
 `FetchResult` carries `ok`, `available`, `event_title`, `error`. The evaluator keys off
 `result.available`. (Original plan assumed a per-tier list via `validType`; that path is
 not anonymously accessible, so the boolean model replaces it.)

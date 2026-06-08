@@ -4,7 +4,7 @@ rabot watches one or more [Resident Advisor](https://ra.co) events and sends a [
 
 ## What it does
 
-rabot is a one-shot CLI: `rabot check` queries RA's public GraphQL API (`event.ticketing.isAnyTicketTierAvailable`) for each watched event to see whether any ticket tier is currently buyable. When an event flips from unavailable to available, it sends a Signal message — to a phone number, a group, or both, **per event**.
+rabot is a one-shot CLI: `rabot check` queries RA's public GraphQL API for each watched event to see whether any **non-add-on** ticket tier is currently buyable. It reads both of RA's ticketing systems — the legacy per-tier `validType` (a tier flips `SOLDOUT → VALID`) and the newer `isAnyTicketTierAvailable` flag — so it works for festivals like Houghton (legacy) as well as newer events. When an event flips from unavailable to available, it sends a Signal message — to a phone number, a group, or both, **per event**.
 
 - Alerts fire **once per transition**, then go quiet. If the event sells out and tickets reappear, the bot **re-arms** and alerts again. A cooldown prevents repeat messages within one availability window.
 - **Per-event state and targets:** each event tracks its own availability/cooldown and can route to its own recipient/group (falling back to a global default).
@@ -45,17 +45,16 @@ Both modules run as a real **`user`** (not a throwaway DynamicUser) so signal-cl
     user = "ak";                                   # runs as this user; link signal-cli in their home
     signalSender = "+10000000000";                 # your linked Signal number
 
-    # Single event (convenience): eventUrl + a global target …
-    eventUrl = "https://ra.co/events/2287366";
-    signalGroupId = "BASE64GROUPID=";              # default target: a group …
-    # signalRecipient = "+10000000001";            # … and/or a phone number (set at least one)
+    # Default target — used by any event that doesn't override it. Set at least one:
+    signalGroupId = "BASE64GROUPID=";
+    # signalRecipient = "+10000000001";
 
-    # … or multiple events, each with its own optional target (falls back to the
-    # global signalRecipient/signalGroupId). `events` supersedes `eventUrl`:
-    # events = [
-    #   { url = "https://ra.co/events/2287366"; groupId = "BASE64GROUPID="; }  # → group
-    #   { url = "https://ra.co/events/2345415"; recipient = "+10000000001"; }  # → you
-    # ];
+    # Events to watch. Each may override the default target with its own
+    # recipient/groupId; omit to fall back to the default above.
+    events = [
+      { url = "https://ra.co/events/2287366"; }                                # → default target
+      # { url = "https://ra.co/events/2345415"; recipient = "+10000000001"; }  # → you instead
+    ];
 
     # interval = "60s";          # check cadence (default 60s)
     # receiveInterval = "6h";    # signal-cli receive housekeeping (default 6h; null to disable)
@@ -102,9 +101,28 @@ A LaunchDaemon with `UserName` (not a LaunchAgent) is used deliberately: it suit
 
 > Finding a group ID: `signal-cli -u <sender> listGroups` prints each group's base64 `Id:`. To alert a group, signal-cli must have **received** the group at least once (the receive timer handles this).
 
+## Config file (alternative to env vars)
+
+Instead of env vars you can use a TOML file — nicer for hand-editing, especially with several events. rabot reads it from `$RABOT_CONFIG`, or `~/.config/rabot/config.toml` by default. **If a config file is present it is authoritative; otherwise rabot falls back to the env vars.** (The Nix modules generate this file for you and point `RABOT_CONFIG` at it, so the systemd unit / launchd plist carries just `RABOT_CONFIG` + `HOME`.)
+
+```toml
+signal_sender = "+12066597096"
+signal_group_id = "BASE64GROUPID="     # default target (set recipient and/or group)
+# signal_recipient = "+10000000001"
+# cooldown_seconds = 900
+# failure_threshold = 5
+
+[[events]]
+url = "https://ra.co/events/2287366"          # → default target
+
+[[events]]
+url = "https://ra.co/events/2345415"
+recipient = "+10000000001"                     # per-event override
+```
+
 ## Manual / non-Nix run
 
-`rabot` only needs `signal-cli` on `PATH` (or `RABOT_SIGNAL_CLI` pointed at it). Set the env vars and run `rabot check` from cron, a systemd timer, or the example `examples/com.rabot.check.plist` launchd job.
+`rabot` only needs `signal-cli` on `PATH` (or `RABOT_SIGNAL_CLI` pointed at it). Provide a config file (above) or the env vars, then run `rabot check` from cron, a systemd timer, or the example `examples/com.rabot.check.plist` launchd job.
 
 ## Account housekeeping (`signal-cli receive`)
 
@@ -116,8 +134,7 @@ The CLI reads environment variables; the modules set them for you from the optio
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `RABOT_EVENTS` | yes¹ | — | JSON list of events: `[{"url","recipient"?,"group"?}, …]`. Per-event target falls back to the globals below. |
-| `RABOT_EVENT_URL` | yes¹ | — | Single-event convenience (used only if `RABOT_EVENTS` is unset) |
+| `RABOT_EVENTS` | yes¹ | — | Events to watch: a plain space/comma-separated URL list (all on the default target), **or** JSON `[{"url","recipient"?,"group"?}, …]` for per-event target overrides. |
 | `RABOT_SIGNAL_SENDER` | yes | — | Phone number of the linked signal-cli account |
 | `RABOT_SIGNAL_RECIPIENT` | yes² | — | Default recipient phone number (per-event target falls back to this) |
 | `RABOT_SIGNAL_GROUP_ID` | yes² | — | Default Signal group (base64 id) (per-event target falls back to this) |
@@ -127,7 +144,7 @@ The CLI reads environment variables; the modules set them for you from the optio
 | `RABOT_GRAPHQL_ENDPOINT` | no | `https://ra.co/graphql` | RA GraphQL endpoint |
 | `RABOT_SIGNAL_CLI` | no | `signal-cli` | Path to the signal-cli binary (the Nix package bakes in a working one) |
 
-¹ Provide events via `RABOT_EVENTS`, `RABOT_EVENT_URL`, or `rabot check <url> …`. ² Each event needs a target — set it per-event in `RABOT_EVENTS`, or set a global `RABOT_SIGNAL_RECIPIENT` / `RABOT_SIGNAL_GROUP_ID`.
+¹ Provide events via `RABOT_EVENTS` or `rabot check <url> …`. ² Each event needs a target — set it per-event in `RABOT_EVENTS`, or set a global `RABOT_SIGNAL_RECIPIENT` / `RABOT_SIGNAL_GROUP_ID`.
 
 ## Monitoring & tuning
 

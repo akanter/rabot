@@ -20,7 +20,7 @@ class FakeNotifier:
 
 
 def test_full_cycle_available_sends_alert(tmp_path, monkeypatch):
-    payload = json.loads((FIXTURES / "tickets_available.json").read_text())
+    payload = json.loads((FIXTURES / "legacy_available.json").read_text())
     transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload))
 
     state_path = str(tmp_path / "state.json")
