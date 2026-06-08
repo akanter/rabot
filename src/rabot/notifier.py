@@ -4,7 +4,7 @@ import sys
 
 
 class SignalNotifier:
-    def __init__(self, signal_cli_path: str, sender: str,
+    def __init__(self, signal_cli_path: str, sender: str | None = None,
                  recipient: str | None = None, group_id: str | None = None):
         if not recipient and not group_id:
             raise ValueError("SignalNotifier needs a recipient or a group_id")
@@ -14,7 +14,12 @@ class SignalNotifier:
         self.group_id = group_id
 
     def send(self, message: str) -> None:
-        cmd = [self.signal_cli_path, "-u", self.sender, "send", "-m", message]
+        cmd = [self.signal_cli_path]
+        # With a single linked account, signal-cli auto-selects it; pass -u only
+        # when a sender is explicitly configured (multi-account setups).
+        if self.sender:
+            cmd += ["-u", self.sender]
+        cmd += ["send", "-m", message]
         # A group send uses `-g <id>` and takes no positional recipient.
         if self.group_id:
             cmd += ["-g", self.group_id]

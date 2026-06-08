@@ -6,7 +6,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from rabot.config import load_config
+from rabot.config import load_config, resolve_state_path
 from rabot.state import EventState, load_states, save_states
 from rabot.ra_client import fetch
 from rabot.evaluator import evaluate, Action
@@ -83,20 +83,13 @@ def run_check(event_urls: list[str] | None = None) -> None:
 
 
 def run_status() -> int:
-    config = load_config()
-    states = load_states(config.state_path)
-    if not config.events and not states:
-        print("rabot: no events configured and no state yet.")
+    # status only reads state — no Signal config required.
+    states = load_states(resolve_state_path())
+    if not states:
+        print("rabot: no state yet — no checks have run.")
         return 0
     now = datetime.now(timezone.utc)
-    # Show configured events first, then any others present in state.
-    ids = [w.event_id for w in config.events]
-    ids += [eid for eid in states if eid not in ids]
-    for eid in ids:
-        st = states.get(eid)
-        if st is None:
-            print(f"event {eid}: no checks yet")
-            continue
+    for eid, st in states.items():
         ago = "?"
         if st.last_checked:
             try:

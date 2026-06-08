@@ -153,11 +153,14 @@ def test_send_failure_preserves_observability_and_retries(tmp_path, monkeypatch)
 
 # ---- status ----
 
-def test_status_prints_per_event_summary(tmp_path, monkeypatch, capsys):
+def test_status_prints_per_event_summary_without_sender(tmp_path, monkeypatch, capsys):
     sp = str(tmp_path / "state.json")
     save_states(sp, {"1234567": EventState(last_available=False, last_ok=True,
                                            last_http_status=200, checks=42)})
-    monkeypatch.setattr(cli, "load_config", lambda: cfg(sp))
+    # status only needs the state path — no RABOT_SIGNAL_SENDER / full config
+    monkeypatch.setenv("RABOT_STATE_PATH", sp)
+    monkeypatch.delenv("RABOT_CONFIG", raising=False)
+    monkeypatch.delenv("RABOT_SIGNAL_SENDER", raising=False)
     assert cli.run_status() == 0
     out = capsys.readouterr().out
     assert "1234567" in out and "available=False" in out and "checks=42" in out

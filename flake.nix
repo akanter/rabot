@@ -27,8 +27,13 @@
           });
         };
         signalSender = lib.mkOption {
-          type = lib.types.str;
-          description = "Linked signal-cli account phone number (the sender).";
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = ''
+            Linked signal-cli account (sender). Optional: with a single linked
+            account on the box it's auto-selected, so only set this for
+            multi-account setups.
+          '';
         };
         signalRecipient = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
@@ -58,7 +63,6 @@
       # targets fall back to the default signal_recipient/signal_group_id.
       rabotConfigAttrs = cfg:
         {
-          signal_sender = cfg.signalSender;
           cooldown_seconds = cfg.cooldownSeconds;
           failure_threshold = cfg.failureThreshold;
           events = map
@@ -67,6 +71,7 @@
               // nixpkgs.lib.optionalAttrs (e.groupId != null) { group = e.groupId; })
             cfg.events;
         }
+        // nixpkgs.lib.optionalAttrs (cfg.signalSender != null) { signal_sender = cfg.signalSender; }
         // nixpkgs.lib.optionalAttrs (cfg.signalRecipient != null) { signal_recipient = cfg.signalRecipient; }
         // nixpkgs.lib.optionalAttrs (cfg.signalGroupId != null) { signal_group_id = cfg.signalGroupId; };
 
@@ -173,7 +178,7 @@
               timerConfig = {
                 OnBootSec = cfg.interval;
                 OnUnitActiveSec = cfg.interval;
-                RandomizedDelaySec = "15s";
+                RandomizedDelaySec = "3s";
               };
             };
             # Periodic `signal-cli receive` keeps the linked device healthy
@@ -185,7 +190,7 @@
                 User = cfg.user;
                 Environment = [ "HOME=${config.users.users.${cfg.user}.home}" ];
                 ExecStart =
-                  "${pkgs.signal-cli}/bin/signal-cli -u ${cfg.signalSender} receive --timeout 10";
+                  "${pkgs.signal-cli}/bin/signal-cli ${lib.optionalString (cfg.signalSender != null) "-u ${cfg.signalSender} "}receive --timeout 10";
                 # Discard received-message output (housekeeping only; also avoids
                 # logging message contents). Errors still go to the journal.
                 StandardOutput = "null";
@@ -255,9 +260,9 @@
             # (refreshes prekeys, group/session state). rabot itself never receives.
             launchd.daemons.rabot-receive = lib.mkIf (cfg.receiveIntervalSeconds != null) {
               serviceConfig = {
-                ProgramArguments = [
-                  "${pkgs.signal-cli}/bin/signal-cli" "-u" cfg.signalSender "receive" "--timeout" "10"
-                ];
+                ProgramArguments = [ "${pkgs.signal-cli}/bin/signal-cli" ]
+                  ++ lib.optionals (cfg.signalSender != null) [ "-u" cfg.signalSender ]
+                  ++ [ "receive" "--timeout" "10" ];
                 UserName = cfg.user;
                 StartInterval = cfg.receiveIntervalSeconds;
                 RunAtLoad = true;

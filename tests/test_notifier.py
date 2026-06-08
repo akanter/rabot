@@ -35,9 +35,15 @@ def test_group_send_uses_g_flag_not_recipient(monkeypatch):
     ]
 
 
+def test_no_sender_omits_u_flag(monkeypatch):
+    captured = _capture(monkeypatch)
+    SignalNotifier("signal-cli", recipient="+15550000002").send("hi")  # no sender
+    assert captured["cmd"] == ["signal-cli", "send", "-m", "hi", "+15550000002"]
+
+
 def test_requires_recipient_or_group():
     with pytest.raises(ValueError, match="recipient or a group"):
-        SignalNotifier("signal-cli", "+1")
+        SignalNotifier("signal-cli")
 
 
 def test_send_raises_on_failure(monkeypatch):

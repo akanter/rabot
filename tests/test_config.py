@@ -46,9 +46,11 @@ def test_event_without_target_raises():
         load_config(env)
 
 
-def test_missing_sender_raises():
-    with pytest.raises(ValueError, match="RABOT_SIGNAL_SENDER"):
-        load_config({"RABOT_EVENTS": "https://ra.co/events/1", "RABOT_SIGNAL_RECIPIENT": "+1"})
+def test_sender_is_optional():
+    # no RABOT_SIGNAL_SENDER → signal_sender None (single account auto-selected)
+    cfg = load_config({"RABOT_EVENTS": "https://ra.co/events/1", "RABOT_SIGNAL_RECIPIENT": "+1"})
+    assert cfg.signal_sender is None
+    assert cfg.events[0].event_id == "1"
 
 
 def test_no_events_is_allowed_cli_supplies():
@@ -112,11 +114,11 @@ def test_toml_config_takes_precedence_over_env(tmp_path):
     assert [e.event_id for e in cfg.events] == ["111"]
 
 
-def test_toml_missing_sender_raises(tmp_path):
+def test_toml_sender_optional(tmp_path):
     p = tmp_path / "config.toml"
-    p.write_text('[[events]]\nurl = "https://ra.co/events/111"\n')
-    with pytest.raises(ValueError, match="signal_sender"):
-        load_config({"RABOT_CONFIG": str(p)})
+    p.write_text('signal_recipient = "+1"\n[[events]]\nurl = "https://ra.co/events/111"\n')
+    cfg = load_config({"RABOT_CONFIG": str(p)})
+    assert cfg.signal_sender is None and cfg.events[0].event_id == "111"
 
 
 def test_rabot_config_missing_file_raises():

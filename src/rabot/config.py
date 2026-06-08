@@ -17,6 +17,21 @@ def default_config_path() -> str:
     return os.path.join(base, "rabot", "config.toml")
 
 
+def resolve_state_path(env=None) -> str:
+    """Where the state file lives — without requiring the full config.
+
+    Used by `rabot status`, which only reads state and needs no Signal settings.
+    Mirrors load_config's precedence: a TOML config's state_path if a config file
+    is in play, else RABOT_STATE_PATH, else the default.
+    """
+    env = os.environ if env is None else env
+    cfg_path = env.get("RABOT_CONFIG")
+    if cfg_path and os.path.exists(cfg_path):
+        with open(cfg_path, "rb") as handle:
+            return tomllib.load(handle).get("state_path") or default_state_path()
+    return env.get("RABOT_STATE_PATH") or default_state_path()
+
+
 @dataclass(frozen=True)
 class EventWatch:
     """A single watched event and where its alerts go."""
@@ -35,7 +50,9 @@ class EventWatch:
 @dataclass(frozen=True)
 class Config:
     events: tuple[EventWatch, ...]
-    signal_sender: str
+    # Optional: with a single linked signal-cli account it's auto-selected, so
+    # this is only needed for multi-account setups.
+    signal_sender: str | None = None
     # Defaults used when building a watch from a bare CLI url.
     default_recipient: str | None = None
     default_group_id: str | None = None
@@ -90,9 +107,7 @@ def _signal_cli(env) -> str:
 def _from_toml(path: str, env) -> Config:
     with open(path, "rb") as handle:
         data = tomllib.load(handle)
-    sender = data.get("signal_sender")
-    if not sender:
-        raise ValueError(f"config {path}: signal_sender is required")
+    sender = data.get("signal_sender")  # optional — single account auto-selected
     default_recipient = data.get("signal_recipient")
     default_group_id = data.get("signal_group_id")
     events = tuple(
@@ -114,9 +129,7 @@ def _from_toml(path: str, env) -> Config:
 
 
 def _from_env(env) -> Config:
-    sender = env.get("RABOT_SIGNAL_SENDER")
-    if not sender:
-        raise ValueError("Missing required env var RABOT_SIGNAL_SENDER")
+    sender = env.get("RABOT_SIGNAL_SENDER") or None  # optional — single account auto-selected
     default_recipient = env.get("RABOT_SIGNAL_RECIPIENT") or None
     default_group_id = env.get("RABOT_SIGNAL_GROUP_ID") or None
 
