@@ -106,7 +106,7 @@ A LaunchDaemon with `UserName` (not a LaunchAgent) is used deliberately: it suit
 Instead of env vars you can use a TOML file — nicer for hand-editing, especially with several events. rabot reads it from `$RABOT_CONFIG`, or `~/.config/rabot/config.toml` by default. **If a config file is present it is authoritative; otherwise rabot falls back to the env vars.** (The Nix modules generate this file for you and point `RABOT_CONFIG` at it, so the systemd unit / launchd plist carries just `RABOT_CONFIG` + `HOME`.)
 
 ```toml
-signal_sender = "+12066597096"
+signal_sender = "+18883214321"
 signal_group_id = "BASE64GROUPID="     # default target (set recipient and/or group)
 # signal_recipient = "+10000000001"
 # cooldown_seconds = 900
