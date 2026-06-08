@@ -1,0 +1,50 @@
+{
+  "data": {
+    "event": {
+      "id": "2287366",
+      "title": "Houghton 2026",
+      "ticketingSystem": "LEGACY",
+      "tickets": [
+        {
+          "title": "Tier 1",
+          "validType": "VALID",
+          "isAddOn": false,
+          "priceRetail": 280
+        },
+        {
+          "title": "Tier 2",
+          "validType": "SOLDOUT",
+          "isAddOn": false,
+          "priceRetail": 290
+        },
+        {
+          "title": "Tier 3",
+          "validType": "SOLDOUT",
+          "isAddOn": false,
+          "priceRetail": 300
+        },
+        {
+          "title": "Tier 4",
+          "validType": "SOLDOUT",
+          "isAddOn": false,
+          "priceRetail": 310
+        },
+        {
+          "title": "Tier 5",
+          "validType": "SOLDOUT",
+          "isAddOn": false,
+          "priceRetail": 320
+        },
+        {
+          "title": "Final Tier",
+          "validType": "SOLDOUT",
+          "isAddOn": false,
+          "priceRetail": 330
+        }
+      ],
+      "ticketing": {
+        "isAnyTicketTierAvailable": false
+      }
+    }
+  }
+}
