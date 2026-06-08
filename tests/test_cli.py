@@ -1,9 +1,16 @@
-import time
+import pytest
 
 import rabot.cli as cli
 from rabot.ra_client import FetchResult
-from rabot.config import Config
-from rabot.state import State, load_state
+from rabot.config import Config, EventWatch
+from rabot.state import EventState, load_states, save_states
+
+
+def cfg(state_path, events=None, **kw):
+    if events is None:
+        events = [EventWatch("https://ra.co/events/1234567", recipient="+2")]
+    return Config(events=tuple(events), signal_sender="+1",
+                  default_recipient="+2", state_path=state_path, **kw)
 
 
 class FakeNotifier:
@@ -14,16 +21,15 @@ class FakeNotifier:
         self.messages.append(message)
 
 
+# ---- link ----
+
 def test_link_command_invokes_linker(monkeypatch):
     calls = {}
     monkeypatch.setenv("RABOT_SIGNAL_CLI", "/store/signal-cli")
     monkeypatch.setattr(
         cli, "signal_link",
         lambda cli_path, device: calls.update(cli=cli_path, device=device) or 0)
-
-    rc = cli.main(["link", "rabot-cage"])
-
-    assert rc == 0
+    assert cli.main(["link", "rabot-cage"]) == 0
     assert calls == {"cli": "/store/signal-cli", "device": "rabot-cage"}
 
 
@@ -35,89 +41,123 @@ def test_link_command_defaults_device_to_hostname(monkeypatch):
     assert calls["device"].startswith("rabot-")
 
 
+# ---- check ----
+
 def test_run_check_alerts_and_persists(tmp_path, monkeypatch):
-    state_path = str(tmp_path / "state.json")
-    cfg = Config(event_url="https://ra.co/events/1234567", signal_sender="+1",
-                 signal_recipient="+2", state_path=state_path)
-    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    sp = str(tmp_path / "state.json")
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(sp))
     monkeypatch.setattr(cli, "fetch",
-                        lambda c, client=None: FetchResult(ok=True, available=True, event_title="Test Event"))
+                        lambda eid, ep, client=None: FetchResult(ok=True, available=True,
+                                                                 event_title="T", status_code=200))
     notifier = FakeNotifier()
-    monkeypatch.setattr(cli, "build_notifier", lambda c: notifier)
+    monkeypatch.setattr(cli, "build_notifier", lambda config, watch: notifier)
 
     cli.run_check()
 
     assert len(notifier.messages) == 1
-    assert load_state(state_path).last_available is True
+    st = load_states(sp)["1234567"]
+    assert st.last_available is True and st.alerts == 1 and st.last_ok is True
 
 
 def test_run_check_no_alert_when_unavailable(tmp_path, monkeypatch):
-    state_path = str(tmp_path / "state.json")
-    cfg = Config(event_url="https://ra.co/events/1234567", signal_sender="+1",
-                 signal_recipient="+2", state_path=state_path)
-    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    sp = str(tmp_path / "state.json")
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(sp))
     monkeypatch.setattr(cli, "fetch",
-                        lambda c, client=None: FetchResult(ok=True, available=False, event_title="Test Event"))
+                        lambda eid, ep, client=None: FetchResult(ok=True, available=False,
+                                                                 status_code=200))
     notifier = FakeNotifier()
-    monkeypatch.setattr(cli, "build_notifier", lambda c: notifier)
+    monkeypatch.setattr(cli, "build_notifier", lambda config, watch: notifier)
 
     cli.run_check()
 
     assert notifier.messages == []
-    assert load_state(state_path).last_available is False
+    st = load_states(sp)["1234567"]
+    assert st.last_available is False and st.alerts == 0
 
 
-def test_event_url_cli_arg_overrides_config(tmp_path, monkeypatch):
-    state_path = str(tmp_path / "state.json")
-    cfg = Config(event_url="", signal_sender="+1", signal_recipient="+2",
-                 state_path=state_path)  # no event in config
-    monkeypatch.setattr(cli, "load_config", lambda: cfg)
-    seen = {}
+def test_event_urls_cli_override(tmp_path, monkeypatch):
+    sp = str(tmp_path / "state.json")
+    # config has a different event; CLI args should override it
+    monkeypatch.setattr(cli, "load_config",
+                        lambda: cfg(sp, events=[EventWatch("https://ra.co/events/111", recipient="+2")]))
+    seen = []
+    monkeypatch.setattr(cli, "fetch",
+                        lambda eid, ep, client=None: seen.append(eid) or
+                        FetchResult(ok=True, available=False, status_code=200))
+    monkeypatch.setattr(cli, "build_notifier", lambda config, watch: FakeNotifier())
 
-    def fake_fetch(c, client=None):
-        seen["event_url"] = c.event_url
-        return FetchResult(ok=True, available=False, event_title=None)
+    cli.run_check(event_urls=["https://ra.co/events/9999999"])
 
-    monkeypatch.setattr(cli, "fetch", fake_fetch)
-    monkeypatch.setattr(cli, "build_notifier", lambda c: FakeNotifier())
-
-    cli.run_check(event_url="https://ra.co/events/9999999")
-
-    assert seen["event_url"] == "https://ra.co/events/9999999"
+    assert seen == ["9999999"]
 
 
-def test_no_event_url_anywhere_exits(tmp_path, monkeypatch):
-    import pytest
-    cfg = Config(event_url="", signal_sender="+1", signal_recipient="+2",
-                 state_path=str(tmp_path / "s.json"))
-    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+def test_multi_event_per_event_targets(tmp_path, monkeypatch):
+    sp = str(tmp_path / "state.json")
+    events = [
+        EventWatch("https://ra.co/events/111", group_id="GROUP=="),   # available → group
+        EventWatch("https://ra.co/events/222", recipient="+15550000009"),  # unavailable → quiet
+    ]
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(sp, events=events))
+    monkeypatch.setattr(cli, "fetch",
+                        lambda eid, ep, client=None: FetchResult(
+                            ok=True, available=(eid == "111"), event_title=f"E{eid}", status_code=200))
+    sent = []
+
+    def factory(config, watch):
+        class N:
+            def send(self, m):
+                sent.append((watch.event_id, watch.recipient, watch.group_id, m))
+        return N()
+
+    monkeypatch.setattr(cli, "build_notifier", factory)
+
+    cli.run_check()
+
+    # only the available event (111) alerted, and it went to its group target
+    assert len(sent) == 1
+    eid, recipient, group, msg = sent[0]
+    assert eid == "111" and group == "GROUP==" and recipient is None
+    states = load_states(sp)
+    assert states["111"].last_available is True
+    assert states["222"].last_available is False
+
+
+def test_no_events_exits(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(str(tmp_path / "s.json"), events=[]))
     with pytest.raises(SystemExit):
         cli.run_check()
 
 
-def test_send_failure_persists_failure_counter_and_retries(tmp_path, monkeypatch):
-    import rabot.cli as cli
-    from rabot.ra_client import FetchResult
-    from rabot.config import Config
-    from rabot.state import State, save_state, load_state
-
-    state_path = str(tmp_path / "state.json")
-    # Start already at threshold-1 so this failed fetch should trigger a blind alert
-    save_state(state_path, State(consecutive_failures=4))
-    cfg = Config(event_url="https://ra.co/events/1234567", signal_sender="+1",
-                 signal_recipient="+2", state_path=state_path, failure_threshold=5)
-    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+def test_send_failure_preserves_observability_and_retries(tmp_path, monkeypatch):
+    sp = str(tmp_path / "state.json")
+    # event already at threshold-1 so this failed fetch triggers a blind alert
+    save_states(sp, {"1234567": EventState(consecutive_failures=4, failures=4)})
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(sp, failure_threshold=5))
     monkeypatch.setattr(cli, "fetch",
-                        lambda c, client=None: FetchResult(ok=False, error="boom"))
+                        lambda eid, ep, client=None: FetchResult(ok=False, error="boom", status_code=429))
 
     class FailingNotifier:
         def send(self, message):
             raise RuntimeError("signal-cli down")
 
-    monkeypatch.setattr(cli, "build_notifier", lambda c: FailingNotifier())
+    monkeypatch.setattr(cli, "build_notifier", lambda config, watch: FailingNotifier())
 
     cli.run_check()  # must NOT raise
 
-    persisted = load_state(state_path)
-    assert persisted.consecutive_failures == 5      # counter progressed despite send failure
-    assert persisted.blind_alerted is False          # alert not recorded as delivered -> retries
+    st = load_states(sp)["1234567"]
+    assert st.consecutive_failures == 5      # progressed despite send failure
+    assert st.blind_alerted is False          # not recorded as delivered → retries
+    assert st.last_http_status == 429         # observability preserved through rollback
+    assert st.alerts == 0
+
+
+# ---- status ----
+
+def test_status_prints_per_event_summary(tmp_path, monkeypatch, capsys):
+    sp = str(tmp_path / "state.json")
+    save_states(sp, {"1234567": EventState(last_available=False, last_ok=True,
+                                           last_http_status=200, checks=42)})
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(sp))
+    assert cli.run_status() == 0
+    out = capsys.readouterr().out
+    assert "1234567" in out and "available=False" in out and "checks=42" in out

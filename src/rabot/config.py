@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 import os
 import re
 
@@ -14,23 +15,45 @@ def default_state_path() -> str:
 
 
 @dataclass(frozen=True)
+class EventWatch:
+    """A single watched event and where its alerts go."""
+    url: str
+    recipient: str | None = None
+    group_id: str | None = None
+
+    @property
+    def event_id(self) -> str:
+        match = re.search(r"/events/(\d+)", self.url)
+        if not match:
+            raise ValueError(f"Could not extract event id from {self.url!r}")
+        return match.group(1)
+
+
+@dataclass(frozen=True)
 class Config:
-    event_url: str
+    events: tuple[EventWatch, ...]
     signal_sender: str
-    signal_recipient: str | None = None
-    signal_group_id: str | None = None
+    # Defaults used when building a watch from a bare CLI url / RABOT_EVENT_URL.
+    default_recipient: str | None = None
+    default_group_id: str | None = None
     state_path: str = ""
     cooldown_seconds: int = 900
     failure_threshold: int = 5
     graphql_endpoint: str = "https://ra.co/graphql"
     signal_cli_path: str = "signal-cli"
 
-    @property
-    def event_id(self) -> str:
-        match = re.search(r"/events/(\d+)", self.event_url)
-        if not match:
-            raise ValueError(f"Could not extract event id from {self.event_url!r}")
-        return match.group(1)
+    def watch_for_url(self, url: str) -> EventWatch:
+        """Build a watch for an ad-hoc URL using the global default target."""
+        return _make_watch(url, self.default_recipient, self.default_group_id)
+
+
+def _make_watch(url: str, recipient: str | None, group_id: str | None) -> EventWatch:
+    if not recipient and not group_id:
+        raise ValueError(
+            f"event {url!r} has no target: set a recipient/group on it, "
+            "or a global RABOT_SIGNAL_RECIPIENT / RABOT_SIGNAL_GROUP_ID"
+        )
+    return EventWatch(url=url, recipient=recipient, group_id=group_id)
 
 
 def load_config(env=None) -> Config:
@@ -42,21 +65,34 @@ def load_config(env=None) -> Config:
             raise ValueError(f"Missing required env var {key}")
         return value
 
-    recipient = env.get("RABOT_SIGNAL_RECIPIENT") or None
-    group_id = env.get("RABOT_SIGNAL_GROUP_ID") or None
-    if not recipient and not group_id:
-        raise ValueError(
-            "Must set RABOT_SIGNAL_RECIPIENT (phone number) or "
-            "RABOT_SIGNAL_GROUP_ID (group), or both"
+    default_recipient = env.get("RABOT_SIGNAL_RECIPIENT") or None
+    default_group_id = env.get("RABOT_SIGNAL_GROUP_ID") or None
+
+    # Events come from RABOT_EVENTS (JSON list) or a single RABOT_EVENT_URL.
+    # Each event may carry its own recipient/group; otherwise it falls back to
+    # the global default. An empty set is allowed here — the CLI may supply a URL.
+    raw = env.get("RABOT_EVENTS")
+    if raw:
+        entries = json.loads(raw)
+    elif env.get("RABOT_EVENT_URL"):
+        entries = [{"url": env["RABOT_EVENT_URL"]}]
+    else:
+        entries = []
+
+    events = tuple(
+        _make_watch(
+            e["url"],
+            e.get("recipient") or default_recipient,
+            e.get("group") or default_group_id,
         )
+        for e in entries
+    )
 
     return Config(
-        # event_url may be empty here and supplied as a CLI argument instead;
-        # presence is validated in cli.run_check before use.
-        event_url=env.get("RABOT_EVENT_URL", ""),
+        events=events,
         signal_sender=required("RABOT_SIGNAL_SENDER"),
-        signal_recipient=recipient,
-        signal_group_id=group_id,
+        default_recipient=default_recipient,
+        default_group_id=default_group_id,
         state_path=env.get("RABOT_STATE_PATH") or default_state_path(),
         cooldown_seconds=int(env.get("RABOT_COOLDOWN_SECONDS", "900")),
         failure_threshold=int(env.get("RABOT_FAILURE_THRESHOLD", "5")),

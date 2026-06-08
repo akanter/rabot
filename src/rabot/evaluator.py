@@ -2,7 +2,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 
 from rabot.ra_client import FetchResult
-from rabot.state import State
+from rabot.state import EventState
 
 
 class Action(Enum):
@@ -17,12 +17,22 @@ class Decision:
     message: str | None = None
 
 
-def evaluate(result: FetchResult, state: State, *, now: float,
+def evaluate(result: FetchResult, state: EventState, *, now: float, now_iso: str,
              cooldown_seconds: int, failure_threshold: int,
-             event_url: str) -> tuple[Decision, State]:
+             event_url: str) -> tuple[Decision, EventState]:
+    # Stamp observability for this cycle regardless of outcome.
+    base = replace(
+        state,
+        last_checked=now_iso,
+        last_ok=result.ok,
+        last_http_status=result.status_code,
+        last_error=result.error,
+        checks=state.checks + 1,
+    )
+
     if not result.ok:
         failures = state.consecutive_failures + 1
-        new = replace(state, consecutive_failures=failures)
+        new = replace(base, consecutive_failures=failures, failures=state.failures + 1)
         if failures >= failure_threshold and not state.blind_alerted:
             new = replace(new, blind_alerted=True)
             msg = (f"⚠️ rabot can't check {event_url} "
@@ -30,7 +40,7 @@ def evaluate(result: FetchResult, state: State, *, now: float,
             return Decision(Action.ALERT_BLIND, msg), new
         return Decision(Action.NONE), new
 
-    new = replace(state, consecutive_failures=0, blind_alerted=False)
+    new = replace(base, consecutive_failures=0, blind_alerted=False)
     available = result.available
 
     if available and not state.last_available:

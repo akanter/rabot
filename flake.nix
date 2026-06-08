@@ -14,7 +14,26 @@
         enable = lib.mkEnableOption "rabot RA resale ticket watcher";
         eventUrl = lib.mkOption {
           type = lib.types.str;
-          description = "RA event URL to watch, e.g. https://ra.co/events/1234567";
+          default = "";
+          description = ''
+            Single RA event URL to watch (convenience). For multiple events, or
+            per-event targets, use `events` instead.
+          '';
+        };
+        events = lib.mkOption {
+          default = [ ];
+          description = ''
+            Events to watch, each with an optional own recipient/groupId. A target
+            omitted here falls back to the top-level signalRecipient/signalGroupId.
+            If non-empty, this supersedes `eventUrl`.
+          '';
+          type = lib.types.listOf (lib.types.submodule {
+            options = {
+              url = lib.mkOption { type = lib.types.str; };
+              recipient = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; };
+              groupId = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; };
+            };
+          });
         };
         signalSender = lib.mkOption {
           type = lib.types.str;
@@ -23,12 +42,12 @@
         signalRecipient = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
-          description = "Recipient phone number. Set this or signalGroupId (or both).";
+          description = "Default recipient phone number (per-event target falls back to this).";
         };
         signalGroupId = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
-          description = "Signal group ID (base64) to alert. Set this or signalRecipient.";
+          description = "Default Signal group id (per-event target falls back to this).";
         };
         cooldownSeconds = lib.mkOption { type = lib.types.int; default = 900; };
         failureThreshold = lib.mkOption { type = lib.types.int; default = 5; };
@@ -42,6 +61,47 @@
           '';
         };
       } // extra;
+
+      # Resolve the effective list of watched events (events list, else the single
+      # eventUrl). Returns a list of { url; recipient; groupId; }.
+      rabotEffectiveEvents = cfg:
+        if cfg.events != [ ] then cfg.events
+        else nixpkgs.lib.optional (cfg.eventUrl != "")
+          { url = cfg.eventUrl; recipient = null; groupId = null; };
+
+      # The rabot env vars shared by both modules (everything except HOME, which
+      # is platform-specific). Events are passed as a JSON list; per-event targets
+      # null out to the global RABOT_SIGNAL_RECIPIENT/GROUP_ID at runtime.
+      rabotEnv = cfg:
+        {
+          RABOT_SIGNAL_SENDER = cfg.signalSender;
+          RABOT_EVENTS = builtins.toJSON (map
+            (e: { url = e.url; recipient = e.recipient; group = e.groupId; })
+            (rabotEffectiveEvents cfg));
+          RABOT_COOLDOWN_SECONDS = toString cfg.cooldownSeconds;
+          RABOT_FAILURE_THRESHOLD = toString cfg.failureThreshold;
+        }
+        // nixpkgs.lib.optionalAttrs (cfg.signalRecipient != null) {
+          RABOT_SIGNAL_RECIPIENT = cfg.signalRecipient;
+        }
+        // nixpkgs.lib.optionalAttrs (cfg.signalGroupId != null) {
+          RABOT_SIGNAL_GROUP_ID = cfg.signalGroupId;
+        };
+
+      # Assertions shared by both modules.
+      rabotAssertions = cfg: [
+        {
+          assertion = rabotEffectiveEvents cfg != [ ];
+          message = "services.rabot: set `eventUrl` or `events`.";
+        }
+        {
+          assertion = builtins.all
+            (e: e.recipient != null || e.groupId != null
+              || cfg.signalRecipient != null || cfg.signalGroupId != null)
+            (rabotEffectiveEvents cfg);
+          message = "services.rabot: every event needs a recipient/groupId, or set a global signalRecipient/signalGroupId.";
+        }
+      ];
     in
     {
       packages = forAll (pkgs: {
@@ -103,10 +163,7 @@
             };
           };
           config = lib.mkIf cfg.enable {
-            assertions = [{
-              assertion = cfg.signalRecipient != null || cfg.signalGroupId != null;
-              message = "services.rabot: set signalRecipient or signalGroupId (or both).";
-            }];
+            assertions = rabotAssertions cfg;
             environment.systemPackages =
               [ self.packages.${pkgs.system}.default ]
               ++ lib.optionals cfg.withCliTools [ pkgs.signal-cli pkgs.qrencode ];
@@ -119,19 +176,13 @@
             systemd.services.rabot = {
               description = "rabot RA resale check";
               path = [ pkgs.signal-cli ];
+              # `environment` (not serviceConfig.Environment) so NixOS safely
+              # escapes the JSON RABOT_EVENTS value.
+              environment = rabotEnv cfg // { HOME = config.users.users.${cfg.user}.home; };
               serviceConfig = {
                 Type = "oneshot";
                 User = cfg.user;
                 ExecStart = "${self.packages.${pkgs.system}.default}/bin/rabot check";
-                Environment = [
-                  "RABOT_EVENT_URL=${cfg.eventUrl}"
-                  "RABOT_SIGNAL_SENDER=${cfg.signalSender}"
-                  "RABOT_COOLDOWN_SECONDS=${toString cfg.cooldownSeconds}"
-                  "RABOT_FAILURE_THRESHOLD=${toString cfg.failureThreshold}"
-                  "HOME=${config.users.users.${cfg.user}.home}"
-                ]
-                ++ lib.optional (cfg.signalRecipient != null) "RABOT_SIGNAL_RECIPIENT=${cfg.signalRecipient}"
-                ++ lib.optional (cfg.signalGroupId != null) "RABOT_SIGNAL_GROUP_ID=${cfg.signalGroupId}";
               };
             };
             systemd.timers.rabot = {
@@ -193,10 +244,7 @@
             };
           };
           config = lib.mkIf cfg.enable {
-            assertions = [{
-              assertion = cfg.signalRecipient != null || cfg.signalGroupId != null;
-              message = "services.rabot: set signalRecipient or signalGroupId (or both).";
-            }];
+            assertions = rabotAssertions cfg;
             environment.systemPackages =
               [ self.packages.${pkgs.system}.default ]
               ++ lib.optionals cfg.withCliTools [ pkgs.signal-cli pkgs.qrencode ];
@@ -214,17 +262,7 @@
                 RunAtLoad = true;
                 StandardErrorPath = "/tmp/rabot.err.log";
                 StandardOutPath = "/tmp/rabot.out.log";
-                EnvironmentVariables = {
-                  HOME = "/Users/${cfg.user}";
-                  RABOT_EVENT_URL = cfg.eventUrl;
-                  RABOT_SIGNAL_SENDER = cfg.signalSender;
-                  RABOT_COOLDOWN_SECONDS = toString cfg.cooldownSeconds;
-                  RABOT_FAILURE_THRESHOLD = toString cfg.failureThreshold;
-                } // lib.optionalAttrs (cfg.signalRecipient != null) {
-                  RABOT_SIGNAL_RECIPIENT = cfg.signalRecipient;
-                } // lib.optionalAttrs (cfg.signalGroupId != null) {
-                  RABOT_SIGNAL_GROUP_ID = cfg.signalGroupId;
-                };
+                EnvironmentVariables = rabotEnv cfg // { HOME = "/Users/${cfg.user}"; };
               };
             };
             # Periodic `signal-cli receive` keeps the linked device healthy
