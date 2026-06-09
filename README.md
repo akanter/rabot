@@ -17,6 +17,7 @@ rabot keeps no process running between checks. A scheduler (systemd timer on Nix
 
 ```
 rabot check [URL ...]   # one check cycle; URLs override the configured events
+rabot daemon            # run continuously, checking every poll_seconds (for fast polling)
 rabot status            # per-event health/stats dashboard from the state file
 rabot link [NAME]       # one-time: link this device to your Signal account
 ```
@@ -56,7 +57,9 @@ Both modules run as a real **`user`** (not a throwaway DynamicUser) so signal-cl
       # { url = "https://ra.co/events/2345415"; recipient = "+10000000001"; }  # → you instead
     ];
 
-    # interval = "60s";          # check cadence (default 60s)
+    # interval = "60s";          # timer-mode check cadence (default 60s)
+    # mode = "daemon";           # long-running loop instead of a timer — for fast polling
+    # pollSeconds = 5;           # daemon-mode loop interval (mode = "daemon")
     # receiveInterval = "6h";    # signal-cli receive housekeeping (default 6h; null to disable)
     # cooldownSeconds = 900;
     # failureThreshold = 5;
@@ -158,6 +161,6 @@ Two views into what the bot is doing:
 
 **Rate-limiting / blocking** shows up directly in that `status=` field and in `state.json`'s `last_http_status`: `200` is healthy, **`429` = throttled**, **`403` = blocked** (a `RATE-LIMITED` tag is added to the log line for those). A healthy-but-quiet bot (`available=False`, `last_http_status=200`, `consecutive_failures=0`) is *correct* silence — there's just nothing to alert on yet.
 
-**Poll cadence** (`interval` / `intervalSeconds`) defaults to 60s. To go faster, lower it and watch `rabot status` / the log for any non-200 status. If `429`/`403` appear, back off; after `RABOT_FAILURE_THRESHOLD` consecutive failures the bot Signals you that it's gone blind, so you are never left guessing.
+**Poll cadence.** In **timer mode** (default), `interval` / `intervalSeconds` sets the cadence (default 60s); the NixOS timer pins `AccuracySec=1s` so sub-minute intervals are actually tight. For **fast polling (≤5s)**, switch to **daemon mode** (`mode = "daemon"`, cadence from `pollSeconds`): one long-lived process loops internally — precise timing, no per-check process spawn, restarted automatically if it dies. Either way, lower the cadence and watch `rabot status` / the log for non-200 status; if `429`/`403` appear, back off (after `RABOT_FAILURE_THRESHOLD` consecutive failures the bot Signals you it's gone blind).
 
 See [`docs/ra-api-notes.md`](docs/ra-api-notes.md) for how availability is detected via the RA GraphQL API.

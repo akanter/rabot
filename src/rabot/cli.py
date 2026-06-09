@@ -1,7 +1,10 @@
 import argparse
 import os
+import random
+import signal
 import socket
 import sys
+import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -32,17 +35,8 @@ def _log_check(watch, result, state) -> None:
     print(line, file=sys.stderr)
 
 
-def run_check(event_urls: list[str] | None = None) -> None:
-    config = load_config()
-    watches = (
-        [config.watch_for_url(u) for u in event_urls] if event_urls else list(config.events)
-    )
-    if not watches:
-        raise SystemExit(
-            "No events: pass `rabot check <url> [<url>…]` or set "
-            "RABOT_EVENT_URL / RABOT_EVENTS"
-        )
-
+def _check_cycle(config, watches) -> None:
+    """One pass over all watched events: fetch → evaluate → notify → save."""
     states = load_states(config.state_path)
     now = time.time()
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -82,6 +76,48 @@ def run_check(event_urls: list[str] | None = None) -> None:
     save_states(config.state_path, states)
 
 
+def run_check(event_urls: list[str] | None = None) -> None:
+    config = load_config()
+    watches = (
+        [config.watch_for_url(u) for u in event_urls] if event_urls else list(config.events)
+    )
+    if not watches:
+        raise SystemExit(
+            "No events: pass `rabot check <url> [<url>…]` or set RABOT_EVENTS"
+        )
+    _check_cycle(config, watches)
+
+
+def run_daemon(stop_event: threading.Event | None = None) -> int:
+    """Long-running loop: a check cycle every poll_seconds, until stopped.
+
+    Used for fast polling where spawning a process per check (the timer model)
+    is wasteful. A failing cycle is logged and the loop continues; SIGTERM/SIGINT
+    stop it cleanly.
+    """
+    config = load_config()
+    if not config.events:
+        raise SystemExit("rabot daemon: no events configured (set RABOT_EVENTS)")
+
+    stop = stop_event or threading.Event()
+    if stop_event is None:  # install signal handlers only when we own the loop
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: stop.set())
+
+    interval = config.poll_seconds
+    print(f"rabot daemon: watching {len(config.events)} event(s) every {interval}s",
+          file=sys.stderr)
+    while not stop.is_set():
+        try:
+            _check_cycle(config, list(config.events))
+        except Exception as exc:  # never let one bad cycle kill the daemon
+            print(f"rabot: check cycle error (continuing): {exc}", file=sys.stderr)
+        # small jitter so requests aren't perfectly metronomic; wakes early on stop
+        stop.wait(interval + random.uniform(0, min(interval * 0.1, 1.0)))
+    print("rabot daemon: stopped", file=sys.stderr)
+    return 0
+
+
 def run_status() -> int:
     # status only reads state — no Signal config required.
     states = load_states(resolve_state_path())
@@ -119,6 +155,7 @@ def main(argv=None) -> int:
     check = sub.add_parser("check", help="Run one availability check cycle")
     check.add_argument("event_urls", nargs="*", default=None,
                        help="RA event URL(s) to check (override configured events)")
+    sub.add_parser("daemon", help="Run continuously, checking every poll_seconds")
     sub.add_parser("status", help="Show per-event health/stats from the state file")
     linkp = sub.add_parser("link", help="Link this device to your Signal account (one-time)")
     linkp.add_argument("name", nargs="?", default=None,
@@ -127,6 +164,8 @@ def main(argv=None) -> int:
     if args.command == "check":
         run_check(event_urls=args.event_urls or None)
         return 0
+    if args.command == "daemon":
+        return run_daemon()
     if args.command == "status":
         return run_status()
     if args.command == "link":

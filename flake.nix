@@ -47,6 +47,20 @@
         };
         cooldownSeconds = lib.mkOption { type = lib.types.int; default = 900; };
         failureThreshold = lib.mkOption { type = lib.types.int; default = 5; };
+        mode = lib.mkOption {
+          type = lib.types.enum [ "timer" "daemon" ];
+          default = "timer";
+          description = ''
+            "timer" runs a one-shot `rabot check` on a scheduler (systemd timer /
+            launchd interval). "daemon" runs a single long-lived `rabot daemon`
+            process that loops every `pollSeconds` — better for fast (≤5s) polling.
+          '';
+        };
+        pollSeconds = lib.mkOption {
+          type = lib.types.int;
+          default = 60;
+          description = "Daemon-mode loop interval in seconds (mode = \"daemon\").";
+        };
         withCliTools = lib.mkOption {
           type = lib.types.bool;
           default = true;
@@ -65,6 +79,7 @@
         {
           cooldown_seconds = cfg.cooldownSeconds;
           failure_threshold = cfg.failureThreshold;
+          poll_seconds = cfg.pollSeconds;
           events = map
             (e: { url = e.url; }
               // nixpkgs.lib.optionalAttrs (e.recipient != null) { recipient = e.recipient; }
@@ -161,24 +176,34 @@
               fi
             '';
             systemd.services.rabot = {
-              description = "rabot RA resale check";
+              description = "rabot RA resale watcher";
               path = [ pkgs.signal-cli ];
+              # daemon mode is a long-lived service → start at boot; timer mode is
+              # a oneshot triggered only by the timer (no wantedBy).
+              wantedBy = lib.mkIf (cfg.mode == "daemon") [ "multi-user.target" ];
               environment = {
                 RABOT_CONFIG = "${(pkgs.formats.toml { }).generate "rabot-config.toml" (rabotConfigAttrs cfg)}";
                 HOME = config.users.users.${cfg.user}.home;
               };
-              serviceConfig = {
-                Type = "oneshot";
-                User = cfg.user;
-                ExecStart = "${self.packages.${pkgs.system}.default}/bin/rabot check";
-              };
+              serviceConfig = { User = cfg.user; } // (
+                if cfg.mode == "daemon" then {
+                  Type = "exec";
+                  ExecStart = "${self.packages.${pkgs.system}.default}/bin/rabot daemon";
+                  Restart = "always";
+                  RestartSec = 5;
+                } else {
+                  Type = "oneshot";
+                  ExecStart = "${self.packages.${pkgs.system}.default}/bin/rabot check";
+                }
+              );
             };
-            systemd.timers.rabot = {
+            systemd.timers.rabot = lib.mkIf (cfg.mode == "timer") {
               wantedBy = [ "timers.target" ];
               timerConfig = {
                 OnBootSec = cfg.interval;
                 OnUnitActiveSec = cfg.interval;
                 RandomizedDelaySec = "3s";
+                AccuracySec = "1s";   # else systemd defaults to 1min → sub-minute isn't tight
               };
             };
             # Periodic `signal-cli receive` keeps the linked device healthy
@@ -244,9 +269,7 @@
             '';
             launchd.daemons.rabot = {
               serviceConfig = {
-                ProgramArguments = [ "${self.packages.${pkgs.system}.default}/bin/rabot" "check" ];
                 UserName = cfg.user;
-                StartInterval = cfg.intervalSeconds;
                 RunAtLoad = true;
                 StandardErrorPath = "/tmp/rabot.err.log";
                 StandardOutPath = "/tmp/rabot.out.log";
@@ -254,7 +277,16 @@
                   RABOT_CONFIG = "${(pkgs.formats.toml { }).generate "rabot-config.toml" (rabotConfigAttrs cfg)}";
                   HOME = "/Users/${cfg.user}";
                 };
-              };
+              } // (
+                if cfg.mode == "daemon" then {
+                  # one long-lived process; launchd restarts it if it exits
+                  ProgramArguments = [ "${self.packages.${pkgs.system}.default}/bin/rabot" "daemon" ];
+                  KeepAlive = true;
+                } else {
+                  ProgramArguments = [ "${self.packages.${pkgs.system}.default}/bin/rabot" "check" ];
+                  StartInterval = cfg.intervalSeconds;
+                }
+              );
             };
             # Periodic `signal-cli receive` keeps the linked device healthy
             # (refreshes prekeys, group/session state). rabot itself never receives.

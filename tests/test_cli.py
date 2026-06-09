@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 import rabot.cli as cli
@@ -152,6 +154,46 @@ def test_send_failure_preserves_observability_and_retries(tmp_path, monkeypatch)
 
 
 # ---- status ----
+
+# ---- daemon ----
+
+def test_daemon_loops_then_stops(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(str(tmp_path / "s.json"), poll_seconds=0))
+    stop = threading.Event()
+    calls = []
+
+    def fake_cycle(config, watches):
+        calls.append(1)
+        if len(calls) >= 3:
+            stop.set()
+
+    monkeypatch.setattr(cli, "_check_cycle", fake_cycle)
+    assert cli.run_daemon(stop_event=stop) == 0
+    assert len(calls) == 3
+
+
+def test_daemon_continues_after_cycle_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(str(tmp_path / "s.json"), poll_seconds=0))
+    stop = threading.Event()
+    calls = []
+
+    def fake_cycle(config, watches):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")        # must not kill the loop
+        if len(calls) >= 3:
+            stop.set()
+
+    monkeypatch.setattr(cli, "_check_cycle", fake_cycle)
+    cli.run_daemon(stop_event=stop)           # must not raise
+    assert len(calls) >= 3
+
+
+def test_daemon_no_events_exits(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: cfg(str(tmp_path / "s.json"), events=[]))
+    with pytest.raises(SystemExit):
+        cli.run_daemon(stop_event=threading.Event())
+
 
 def test_status_prints_per_event_summary_without_sender(tmp_path, monkeypatch, capsys):
     sp = str(tmp_path / "state.json")

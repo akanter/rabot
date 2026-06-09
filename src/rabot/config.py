@@ -59,6 +59,7 @@ class Config:
     state_path: str = ""
     cooldown_seconds: int = 900
     failure_threshold: int = 5
+    poll_seconds: int = 60       # `rabot daemon` loop interval
     graphql_endpoint: str = "https://ra.co/graphql"
     signal_cli_path: str = "signal-cli"
 
@@ -123,6 +124,7 @@ def _from_toml(path: str, env) -> Config:
         state_path=data.get("state_path") or default_state_path(),
         cooldown_seconds=int(data.get("cooldown_seconds", 900)),
         failure_threshold=int(data.get("failure_threshold", 5)),
+        poll_seconds=int(data.get("poll_seconds", 60)),
         graphql_endpoint=data.get("graphql_endpoint", "https://ra.co/graphql"),
         signal_cli_path=data.get("signal_cli") or _signal_cli(env),
     )
@@ -156,6 +158,7 @@ def _from_env(env) -> Config:
         state_path=env.get("RABOT_STATE_PATH") or default_state_path(),
         cooldown_seconds=int(env.get("RABOT_COOLDOWN_SECONDS", "900")),
         failure_threshold=int(env.get("RABOT_FAILURE_THRESHOLD", "5")),
+        poll_seconds=int(env.get("RABOT_POLL_SECONDS", "60")),
         graphql_endpoint=env.get("RABOT_GRAPHQL_ENDPOINT", "https://ra.co/graphql"),
         signal_cli_path=_signal_cli(env),
     )
