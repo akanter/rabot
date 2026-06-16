@@ -129,7 +129,7 @@
       apps = forAll (pkgs: {
         default = {
           type = "app";
-          program = "${self.packages.${pkgs.system}.default}/bin/rabot";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/rabot";
         };
       });
 
@@ -167,7 +167,7 @@
           config = lib.mkIf cfg.enable {
             assertions = rabotAssertions cfg;
             environment.systemPackages =
-              [ self.packages.${pkgs.system}.default ]
+              [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ]
               ++ lib.optionals cfg.withCliTools [ pkgs.signal-cli pkgs.qrencode ];
             # After a rebuild, nudge the operator if signal-cli isn't linked yet.
             system.activationScripts.rabot-link-hint.text = ''
@@ -188,12 +188,12 @@
               serviceConfig = { User = cfg.user; } // (
                 if cfg.mode == "daemon" then {
                   Type = "exec";
-                  ExecStart = "${self.packages.${pkgs.system}.default}/bin/rabot daemon";
+                  ExecStart = "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/rabot daemon";
                   Restart = "always";
                   RestartSec = 5;
                 } else {
                   Type = "oneshot";
-                  ExecStart = "${self.packages.${pkgs.system}.default}/bin/rabot check";
+                  ExecStart = "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/rabot check";
                 }
               );
             };
@@ -259,7 +259,7 @@
           config = lib.mkIf cfg.enable {
             assertions = rabotAssertions cfg;
             environment.systemPackages =
-              [ self.packages.${pkgs.system}.default ]
+              [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ]
               ++ lib.optionals cfg.withCliTools [ pkgs.signal-cli pkgs.qrencode ];
             # After a rebuild, nudge the operator if signal-cli isn't linked yet.
             system.activationScripts.postActivation.text = lib.mkAfter ''
@@ -280,10 +280,10 @@
               } // (
                 if cfg.mode == "daemon" then {
                   # one long-lived process; launchd restarts it if it exits
-                  ProgramArguments = [ "${self.packages.${pkgs.system}.default}/bin/rabot" "daemon" ];
+                  ProgramArguments = [ "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/rabot" "daemon" ];
                   KeepAlive = true;
                 } else {
-                  ProgramArguments = [ "${self.packages.${pkgs.system}.default}/bin/rabot" "check" ];
+                  ProgramArguments = [ "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/rabot" "check" ];
                   StartInterval = cfg.intervalSeconds;
                 }
               );
